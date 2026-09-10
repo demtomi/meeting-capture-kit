@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Permission problems
+    url: https://github.com/demtomi/meeting-capture-kit#permissions-tcc
+    about: Microphone is always required. Screen Recording is required for --source mic+system in sck mode. The grant attaches to your terminal, not to the binary. Read this before filing.
+  - name: Security report
+    url: https://github.com/demtomi/meeting-capture-kit/security/advisories/new
+    about: Do not open a public issue for a security report. Open a private advisory instead.
+  - name: Maintenance stance
+    url: https://github.com/demtomi/meeting-capture-kit#maintenance
+    about: Published as-is. Issues are read, but a response is not promised.

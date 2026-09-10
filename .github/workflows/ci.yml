@@ -1,0 +1,94 @@
+name: CI
+
+# Builds the package and runs every verification executable.
+#
+# There are no secrets and no network access in this workflow. Every check runs
+# with no microphone grant, no screen-recording grant, no display and no socket,
+# which is the whole reason the suite can run on a hosted runner at all.
+#
+# ---------------------------------------------------------------------------
+# RUNNER macOS VERSION
+#
+# `Package.swift` declares `platforms: [.macOS("14.2")]`, which is where
+# `AudioHardwareCreateProcessTap` arrives. Any `macos-latest` image in service
+# clears that comfortably, so resolution should not be the thing that fails.
+#
+# If it does fail at DEPENDENCY RESOLUTION, before a single source file
+# compiles, that is a runner-version problem and not a test failure. Reading it
+# as one wastes an afternoon. Check the runner against the floor first:
+#
+#   - the "Report runner macOS version" step below prints it
+#   - https://github.com/actions/runner-images lists which alias points where
+#
+# The floor was 26.0 until it was measured. That was the development machine's
+# version rather than a requirement, and it locked out every Mac more than two
+# releases old AND kept this workflow from ever resolving. Raising it again
+# needs the same treatment: build at the new floor and run all five checks
+# before changing the number.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-check:
+    name: Build and run checks
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Report runner macOS version
+        # Printed before anything else, so a resolution failure below can be
+        # matched against the floor in Package.swift without guessing.
+        run: |
+          sw_vers
+          echo "Package.swift platforms line:"
+          grep -n 'platforms' Package.swift
+          swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Run verification executables
+        # Every check exits 0 on success and 1 with the failing case named.
+        # `silence-gate-check` also exits 2 when its fixture is missing or empty,
+        # so a run that verified nothing cannot read as a pass. Any non-zero code
+        # fails the job.
+        # The loop runs all five so one failure does not hide the others.
+        run: |
+          set -u
+          BIN="$(swift build --show-bin-path)"
+          FAILED=""
+          for check in \
+            audio-pipeline-check \
+            silence-gate-check \
+            speaker-naming-check \
+            screen-record-check \
+            meeting-presence-check \
+            live-audio-check
+          do
+            echo "::group::$check"
+            if "$BIN/$check"; then
+              echo "PASS $check"
+            else
+              status=$?
+              echo "FAIL $check (exit $status)"
+              FAILED="$FAILED $check"
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ -n "$FAILED" ]; then
+            echo "Failed checks:$FAILED"
+            exit 1
+          fi
+          echo "All checks passed."

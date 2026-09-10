@@ -1,0 +1,160 @@
+name: Bug report
+description: Something in MeetingCaptureKit does not work
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before you fill this in, read the two lines that resolve most reports.
+
+        **Most incoming issues on this package are permission problems, not code problems.**
+        The Microphone grant is always required. Screen Recording is required for
+        `--source mic+system` in the default `--capture sck` mode. The grant attaches to
+        the **app you launch from**, so a binary run in Terminal is granted as Terminal,
+        and a binary run in iTerm2 is granted as iTerm2. After granting Screen Recording
+        you have to restart the terminal app before a new process sees it.
+
+        **A build that fails at dependency resolution is a macOS version problem.**
+        `Package.swift` requires macOS 14.2 or later, which is where
+        `AudioHardwareCreateProcessTap` arrives. SwiftPM refuses to resolve the package
+        below that. On 14.2 or newer, a resolution failure is worth reporting.
+
+        Everything below marked required is required. A report without the command, the
+        macOS version, the chip and the permission state cannot be separated from the
+        permission problems above, and it will not be looked at.
+
+        Do not paste audio, transcripts, meeting content, or participant names.
+
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      description: Run `sw_vers -productVersion` and paste the output.
+      placeholder: "26.6.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: chip
+    attributes:
+      label: Chip
+      description: Run `uname -m`. `arm64` is Apple Silicon, `x86_64` is Intel. Intel is untested and no claim is made about it.
+      options:
+        - Apple Silicon (arm64)
+        - Intel (x86_64)
+    validations:
+      required: true
+
+  - type: input
+    id: chip-model
+    attributes:
+      label: Chip model
+      description: Run `sysctl -n machdep.cpu.brand_string`.
+      placeholder: "Apple M3 Pro"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command you ran
+      description: Copy and paste it. Do not retype it from memory and do not summarise it. Replace a private label or path if you have to, and say that you did.
+      render: shell
+      placeholder: |
+        .build/debug/meeting-capture --label weekly-sync --source mic+system --capture sck
+    validations:
+      required: true
+
+  - type: textarea
+    id: tcc-state
+    attributes:
+      label: TCC state
+      description: |
+        Which permissions are granted, and to which app. Open System Settings, Privacy and Security, and read off both lists. Name the app that holds the grant, not the binary.
+
+        Say explicitly whether the app you launched from appears in each list and whether its switch is on. "Granted" without naming the app is the answer that cannot be acted on.
+      render: text
+      placeholder: |
+        Launched from: iTerm2
+        Microphone:       iTerm2 present, ON. Terminal present, ON.
+        Screen Recording: iTerm2 present, OFF. Terminal present, ON.
+        Terminal app restarted after granting: no
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Include the stderr output. `meeting-capture` writes its permission status, its capture mode, and the per-track durations there.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: checks
+    attributes:
+      label: Check output
+      description: |
+        Run these and paste the result. They need no permissions at all, so they separate a code problem from a permission problem in one step.
+      render: shell
+      value: |
+        swift build
+        swift run silence-gate-check
+        swift run speaker-naming-check
+        swift run screen-record-check
+        swift run meeting-presence-check
+        swift run live-audio-check
+    validations:
+      required: true
+
+  - type: input
+    id: swift-version
+    attributes:
+      label: Swift version
+      description: Run `swift --version` and paste the first line.
+      placeholder: "swift-driver version: 1.x Apple Swift version 6.x"
+    validations:
+      required: false
+
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Run `git rev-parse --short HEAD`.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: audio-route
+    attributes:
+      label: Audio output route at the time
+      description: The Core Audio process tap returns silence on a Bluetooth route. That is a known limit and it is why `--capture sck` is the default.
+      options:
+        - Built-in speakers
+        - Wired headphones or a wired interface
+        - Bluetooth (AirPods or similar)
+        - External display or dock
+        - Not relevant to this report
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: acknowledgements
+    attributes:
+      label: Before you submit
+      options:
+        - label: I read the permission note at the top and this is not a missing grant.
+          required: true
+        - label: This report contains no audio, no transcript text, and no participant names.
+          required: true
+        - label: I understand this package is published as-is and a response is not promised.
+          required: true

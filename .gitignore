@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+.DS_Store
+*.wav
+*.m4a
+*.caf
+*.mov
+*.pack
+*.jsonl
