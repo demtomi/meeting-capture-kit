@@ -36,6 +36,11 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # The live-audio harness is 77 mutations and tens of minutes, so it runs nightly
+  # rather than blocking a push. Without this trigger the scheduled step below is dead
+  # code that reads like coverage.
+  schedule:
+    - cron: "17 4 * * *"
 
 permissions:
   contents: read
@@ -95,3 +100,45 @@ jobs:
             exit 1
           fi
           echo "All checks passed."
+
+      # THE MUTATION HARNESSES, which are the point of this package.
+      #
+      # The checks above prove the suite passes. A suite that passes is evidence about
+      # nothing until a defect makes it fail, and that is exactly what these scripts
+      # establish: each one breaks a source on purpose and asserts that the NAMED case
+      # goes red. Leaving them out of CI meant the project's single differentiator was
+      # enforced by nobody — a change that made a mutation stop biting would have merged
+      # green, and CONTRIBUTING.md calls adding one a merge requirement.
+      #
+      # The four fast harnesses plus captureio run on every push. `live-audio` carries 77
+      # mutations and takes the better part of an hour, so it runs on a schedule instead
+      # of blocking a push. Splitting them that way is a deliberate trade: the long one is
+      # not less important, it is less frequent.
+      - name: Run mutation harnesses
+        if: github.event_name != 'schedule'
+        run: |
+          set -u
+          FAILED=""
+          for s in captureio screen-record speaker-naming meeting-presence silence-gate
+          do
+            echo "::group::$s-mutations"
+            if bash "Scripts/$s-mutations.sh"; then
+              echo "PASS $s"
+            else
+              echo "FAIL $s"
+              FAILED="$FAILED $s"
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ -n "$FAILED" ]; then
+            echo "Harnesses whose mutations stopped biting:$FAILED"
+            exit 1
+          fi
+          echo "Every mutation bit its named case."
+
+      # The long one. 77 mutations over LiveAudio, including the two declared <crash>
+      # limbs. Scheduled rather than per-push because it is measured in tens of minutes.
+      - name: Run the live-audio harness
+        if: github.event_name == 'schedule'
+        run: bash Scripts/live-audio-mutations.sh

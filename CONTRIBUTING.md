@@ -46,6 +46,7 @@ Why: a check that passes is evidence about nothing until a defect makes it fail.
 ### Which changes the rule covers
 
 - Anything in `Sources/MeetingCaptureCLI/`. That is the capture path.
+- Anything in `Sources/CaptureIO/`. That is the resampler, the WAV writer and the capture sink, and every recording passes through all three. This line was missing until an outside reviewer pointed out that the rule called non-negotiable exempted the one library every user runs.
 - Anything in `Sources/LiveAudio/`, `Sources/SilenceGate/`, `Sources/ScreenPreset/`, `Sources/SpeakerNaming/`, `Sources/MeetingPresence/` that changes behaviour rather than a comment.
 - Any change that weakens or removes a `breaksIf:` string in a check. That string names the mutation the case exists to catch. Removing it without a reason removes the case's meaning.
 - Any change that renames or deletes a check case. The mutation scripts assert on the case name, so a rename that looks cosmetic turns a real bite into a silent miss.
@@ -54,9 +55,10 @@ Documentation, comments, and the CI workflow are outside it.
 
 ### The mutation scripts
 
-All five run against this package, from any directory:
+All six run against this package, from any directory:
 
 ```bash
+bash Scripts/captureio-mutations.sh
 bash Scripts/silence-gate-mutations.sh
 bash Scripts/speaker-naming-mutations.sh
 bash Scripts/live-audio-mutations.sh

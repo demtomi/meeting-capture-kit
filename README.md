@@ -283,11 +283,11 @@ Each prints one line per case and exits 0 when every case passes, 1 when one fai
 
 ### Where the falsifier is named
 
-`silence-gate-check`, `meeting-presence-check` and `live-audio-check` take a required `breaksIf:` string on every case, saying which mutation should turn that case red. Printing it beside a failure tells the next reader what the case was defending. `screen-record-check` and `speaker-naming-check` take a name and a condition only, so their falsifiers live in the mutation scripts instead. Adding `breaksIf:` to those two is a welcome change.
+`silence-gate-check`, `meeting-presence-check` and `live-audio-check` take a required `breaksIf:` string on every case, saying which mutation should turn that case red. Printing it beside a failure tells the next reader what the case was defending. `audio-pipeline-check` takes one too, on every case it currently has, though its parameter still defaults to `""` rather than being required — tightening that is a welcome change, and this paragraph forgot the check existed until a reader counted. `screen-record-check` and `speaker-naming-check` take a name and a condition only, so their falsifiers live in the mutation scripts instead.
 
 ### The mutation scripts
 
-`Scripts/*-mutations.sh` break the sources on purpose and assert that the **named** check goes red, not merely that the suite failed. All five run against this package. Run them from anywhere:
+`Scripts/*-mutations.sh` break the sources on purpose and assert that the **named** check goes red, not merely that the suite failed. All six run against this package. Run them from anywhere:
 
 ```bash
 bash Scripts/silence-gate-mutations.sh
@@ -307,7 +307,8 @@ Three honest limits:
 
 - **The scripts do not classify a bite the same way.** `live-audio`, `screen-record` and `meeting-presence` test for the named case **first** and only then explain a run that produced no bite, which is the order that keeps a real red from being reclassified as a build error. `speaker-naming` and `silence-gate` still test the build-error branch first, and they anchor on a bare `error: ` rather than the `file:line:col: error:` form, so a clean build whose output happens to quote the string can be scored as "did not build". That is the defect `live-audio-mutations.sh` records having mis-scored 77 mutations once. Bringing those two into line is a welcome change.
 - **Coverage is narrower than it was before the carve.** The consent notice, the recorder, the screen CLI and the live tap had 34 limbs among them and have none here, because those targets are not in this package. What was cut was cut for that reason and nothing else.
-- **Nothing in `Scripts/` covers `MeetingCaptureCLI` itself.** The capture path has no mutation script. It is the one place where a check would need a real device, and that is exactly why it is missing.
+- **Nothing in `Scripts/` covers `MeetingCaptureCLI` itself.** The capture path has no mutation script. It is the one place where a check would need a real device, and that is exactly why it is missing. `CaptureIO`, which is everything that happens to the samples after the device hands them over, is covered by `captureio-mutations.sh` and needs no device at all.
+- **`SampleSink`'s write-error propagation has no falsifier.** `finish()` is documented to throw any error the background writer hit, and removing the error capture makes it stop throwing with no check noticing. Forcing a real write failure needs a full or read-only filesystem that a check running on any machine cannot assume. `captureio-mutations.sh` prints this gap when it finishes rather than leaving it to be discovered.
 
 ---
 

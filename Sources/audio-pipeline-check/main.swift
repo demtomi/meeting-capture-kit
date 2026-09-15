@@ -258,5 +258,89 @@ do {
           breaksIf: "the flusher handshake is consumed once, so a second finish() blocks forever")
 }
 
+// ---------------------------------------------------------------- 5. the encoder
+// The PCM16 encoder in `WavWriter.append` is the last thing that touches every sample
+// of every recording, and both of its invariants were unfalsifiable until now.
+//
+// The equivalence cases in section 1 could not see either one. They compare the
+// streaming path against the one-shot path with a tolerance of 2 LSB, and BOTH paths
+// would carry the same defect, so the comparison stays green while every sample is
+// wrong in the same direction. A tolerance that forgives a systematic bias is not a
+// tolerance, it is a blind spot.
+print("\n5. the PCM16 encoder, against arithmetic rather than against itself")
+do {
+    // ROUNDING, not truncation. Truncation biases every sample toward zero: it is
+    // inaudible on one sample, and it is a DC-shifted quieter recording across a
+    // meeting. These values are chosen so the two differ — 0.5 LSB apart or more.
+    let awkward: [Float] = [0.00002, 0.00005, 0.0001, -0.00002, -0.00005, -0.0001,
+                            0.123456, -0.123456, 0.5, -0.5, 0.999, -0.999]
+    let rawURL = tmp.appendingPathComponent("encoder.f32")
+    try writeRaw(awkward, to: rawURL)
+    let out = tmp.appendingPathComponent("encoder.wav").path
+    // 16 kHz in, 16 kHz out: the passthrough path, so the converter cannot smear the
+    // values and the only arithmetic left between input and file is the encoder.
+    _ = try Audio.streamResampleToWav(rawURL: rawURL, nativeRate: 16_000, leadFrames: 0, to: out)
+    let got = try readPCM16(out)
+    let wantRounded = awkward.map { Int16((max(-1, min(1, $0)) * 32767).rounded()) }
+    let wantTruncated = awkward.map { Int16(max(-1, min(1, $0)) * 32767) }
+    check("every sample is the ROUNDED PCM16 value, exactly",
+          got == wantRounded,
+          breaksIf: "the encoder truncates instead of rounding, biasing every sample of every recording toward zero")
+    // A positive control on the fixture itself. If these two agreed, the case above
+    // would pass under either arithmetic and would be testing nothing.
+    check("the fixture actually distinguishes rounding from truncation",
+          wantRounded != wantTruncated,
+          breaksIf: "the sample values no longer differ under the two arithmetics, so the case above cannot fail")
+
+    // THE CLAMP. Section 1's fixture peaks at 0.82, so nothing there ever reaches the
+    // clamp and deleting it changes nothing those cases can see. A mixed or gained
+    // signal absolutely does exceed 1.0, and an unclamped Int16 conversion either traps
+    // or wraps a loud passage to full-scale noise of the opposite sign.
+    let hot: [Float] = [1.5, -1.5, 2.0, -2.0, 1.0, -1.0, 0.0]
+    let hotURL = tmp.appendingPathComponent("hot.f32")
+    try writeRaw(hot, to: hotURL)
+    let hotOut = tmp.appendingPathComponent("hot.wav").path
+    _ = try Audio.streamResampleToWav(rawURL: hotURL, nativeRate: 16_000, leadFrames: 0, to: hotOut)
+    let hotGot = try readPCM16(hotOut)
+    check("over-unity samples clamp to full scale instead of wrapping (\(hotGot.prefix(4)))",
+          hotGot == [32767, -32767, 32767, -32767, 32767, -32767, 0],
+          breaksIf: "the clamp is removed, so a loud passage wraps to full-scale noise of the opposite sign")
+}
+
+// ---------------------------------------------------------------- 6. public API
+// `Audio.padLead` and `Audio.finalizeTrack` are exported from a library product and
+// have no caller anywhere in this package. Exported API with no caller and no check is
+// how a library ships a function nobody has ever run. These are the cases that make
+// them exercised rather than merely compiled.
+print("\n6. exported helpers that the CLI itself does not call")
+do {
+    let rate = 48_000.0
+    let body = signal(frames: 4_800, rate: rate)          // 0.1 s
+    // padLead counts its silence at the NATIVE rate. Counting at the target rate is a
+    // 3x alignment error at 48 kHz, which shifts every timestamp in a transcript.
+    let padded = Audio.padLead(body, leadNs: 250_000_000, nativeRate: rate)   // 0.25 s
+    check("padLead prepends lead frames counted at the NATIVE rate (\(padded.count - body.count))",
+          padded.count - body.count == 12_000,
+          breaksIf: "the lead is counted at the target rate, so alignment is out by the resample ratio")
+    check("padLead's padding is silence and the body survives it",
+          padded.prefix(12_000).allSatisfy { $0 == 0 } && Array(padded.suffix(body.count)) == body,
+          breaksIf: "the pad is appended rather than prepended, or it overwrites the head of the take")
+    check("a zero lead leaves the samples untouched",
+          Audio.padLead(body, leadNs: 0, nativeRate: rate) == body,
+          breaksIf: "a zero lead still allocates a pad, shifting a single-track recording")
+
+    // finalizeTrack is the one-shot path section 1 compares against, called here through
+    // its public face so the exported entry point is exercised, not just its internals.
+    let rawURL = tmp.appendingPathComponent("oneshot.f32")
+    try writeRaw(body, to: rawURL)
+    let out = tmp.appendingPathComponent("oneshot.wav").path
+    let dur = try Audio.finalizeTrack(body, firstBufferNs: 0, sharedStartNs: 0,
+                                      nativeRate: rate, to: out)
+    let oneShotFrames = try readPCM16(out).count
+    check("finalizeTrack reports the duration it wrote (\(String(format: "%.4f", dur))s)",
+          abs(dur - 0.1) < 0.001 && oneShotFrames == Int(dur * 16_000),
+          breaksIf: "the reported duration is computed from the input rather than from the frames written")
+}
+
 print("\n" + (failures == 0 ? "audio-pipeline-check OK" : "\(failures) check(s) FAILED"))
 exit(failures == 0 ? 0 : 1)

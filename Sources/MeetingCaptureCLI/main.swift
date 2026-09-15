@@ -339,8 +339,31 @@ if let s = seconds {
         if ticks % 50 == 0 { emitLevelLine() }
     }
 } else {
-    FileHandle.standardError.write("[meeting-capture] recording — press Enter or Ctrl-C to stop.\n".data(using: .utf8)!)
-    Thread.detachNewThread { _ = readLine(); stopRequested = 1 }
+    // EOF ON STDIN IS NOT A STOP REQUEST, and treating it as one lost whole meetings.
+    //
+    // `readLine()` returns nil at EOF, and the return value used to be discarded with
+    // `_ =`, so a closed stdin stopped the recording as surely as a keypress. Every
+    // unattended launch has a closed stdin: cron, launchd, `ssh host meeting-capture`,
+    // any supervisor, any wrapper script with a redirect. Those runs ended in under a
+    // second, wrote the manifest that README calls the completion sentinel, pointed it
+    // at an empty WAV, and exited 0 — and with `--transcriber` they then deleted the
+    // work directory. A silent total loss from a process reporting success.
+    //
+    // nil now means "there is nobody at this keyboard", which is a reason to keep
+    // recording until a signal arrives, not a reason to stop.
+    if isatty(FileHandle.standardInput.fileDescriptor) == 1 {
+        FileHandle.standardError.write("[meeting-capture] recording — press Enter or Ctrl-C to stop.\n".data(using: .utf8)!)
+    } else {
+        FileHandle.standardError.write("[meeting-capture] recording — stdin is not a terminal, so send SIGINT or SIGTERM to stop.\n".data(using: .utf8)!)
+    }
+    Thread.detachNewThread {
+        while true {
+            if readLine() != nil { stopRequested = 1; return }
+            // EOF. There is no keyboard. Stop reading and leave the take to a signal
+            // or to --seconds; spinning on readLine() at EOF would burn a core.
+            return
+        }
+    }
     // Emit peak-audio-level lines every ~5 s so the app can detect dead air and
     // offer to auto-stop a forgotten recording. PER TRACK, not a max.
     //
@@ -386,6 +409,10 @@ func finalize(_ sink: SampleSink?, firstBufferNs: UInt64, zeroNs: UInt64,
         FileHandle.standardError.write("could not save the \(what) capture: \(error)\n".data(using: .utf8)!)
         exit(1)
     }
+    // ONE empty track is a warning, not a failure. On `mic+system` the system track is
+    // legitimately empty whenever nothing played during the take, and the mic track
+    // beside it is a real recording that must not be thrown away. The refusal for a
+    // take where NOTHING was captured is after both calls, where it can see both.
     if sink.totalFrames == 0 {
         FileHandle.standardError.write("WARNING: \(what) captured 0 frames.\n".data(using: .utf8)!)
     }
@@ -414,6 +441,27 @@ if let tap {
                       nativeRate: tap.nativeRate, to: systemPath, what: "system audio")
 }
 FileHandle.standardError.write(String(format: "[meeting-capture] mic %.1fs, system %.1fs\n", micDur, sysDur).data(using: .utf8)!)
+
+// A take where NOTHING was captured on ANY track is a failed recording, and it must
+// not produce a manifest. The manifest is the "capture complete" sentinel a watcher
+// keys on, so writing one over an empty WAV tells every downstream reader that an
+// empty file is a finished meeting — and with `--transcriber` the work directory is
+// then deleted on the transcriber's exit 0, taking the evidence with it.
+//
+// A silent room still delivers frames. Zero frames on every track means the capture
+// never happened: no device, no grant, or a run that ended before audio flowed.
+// `Audio.swift` states the principle this enforces — a recorder that silently
+// corrupts a recording is worse than one that refuses to write it.
+let capturedFrames = (micSink?.totalFrames ?? 0) + (sysSink?.totalFrames ?? 0)
+if capturedFrames == 0 {
+    FileHandle.standardError.write("""
+        nothing was captured on any track, so this is not a recording.
+        No manifest was written, because a manifest means a capture completed.
+        The empty files are in \(workDir) if you want to look at them.
+
+        """.data(using: .utf8)!)
+    exit(1)
+}
 
 // ---- manifest ------------------------------------------------------------
 var tracks: [String: Any] = [
