@@ -33,6 +33,16 @@ public final class SampleSink {
     /// constantly during a meeting that may run for hours.
     private let flushInterval: TimeInterval = 0.2
 
+    /// Signalled by the flush thread as it exits, so `finish()` JOINS it instead of
+    /// guessing how long it needs.
+    ///
+    /// `finish()` used to sleep `flushInterval + 0.05` and hope. A `writeChunk` still
+    /// in flight past that window landed its bytes AFTER the final drain had already
+    /// written the tail, so the file came out reordered, `totalFrames` counted only
+    /// the frames that happened to win the race, and `finish()` returned success on a
+    /// capture whose samples had not reached the disk. A sleep is not a handshake.
+    private let flusherDone = DispatchSemaphore(value: 0)
+
     public init(directory: String, name: String) throws {
         url = URL(fileURLWithPath: directory).appendingPathComponent("\(name).f32")
         guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
@@ -90,6 +100,9 @@ public final class SampleSink {
     }
 
     private func flushLoop() {
+        // Signalled on EVERY exit path, so `finish()` can never wait on a thread that
+        // has already gone.
+        defer { flusherDone.signal() }
         while true {
             Thread.sleep(forTimeInterval: flushInterval)
             lock.lock()
@@ -117,10 +130,18 @@ public final class SampleSink {
     /// THROWS any write error the background thread hit. A capture whose samples
     /// failed to reach the disk must not be reported as a successful recording.
     public func finish() throws {
-        lock.lock(); running = false; lock.unlock()
-        // The flusher checks `running` only after its own write, so one interval is
-        // the longest it can still be working.
-        Thread.sleep(forTimeInterval: flushInterval + 0.05)
+        lock.lock()
+        let hadFlusher = flusher != nil
+        running = false
+        lock.unlock()
+        // JOIN the flusher rather than outwait it. Once this returns, no other thread
+        // touches `handle`, `staging`, `totalFrames` or `writeError`, so everything
+        // below runs unopposed and the error check below sees every write that was
+        // ever attempted.
+        if hadFlusher {
+            flusherDone.wait()
+            flusher = nil
+        }
         lock.lock()
         let remainder = staging
         staging.removeAll()

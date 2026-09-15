@@ -30,6 +30,11 @@ final class SystemTap: SystemCapturer {
     /// The current default output device (id, uid, name). The aggregate that wraps
     /// the tap MUST be pinned to this device — otherwise a global tap captures
     /// silence whenever audio plays to a non-default route (headphones/AirPods).
+    ///
+    /// This is read ONCE, in `start()`, and there is no listener on
+    /// `kAudioHardwarePropertyDefaultOutputDevice`. Change the output route in the
+    /// middle of a meeting and the tap keeps listening to the device you left. That,
+    /// not Bluetooth, is the case `--capture sck` exists to cover.
     private func defaultOutputDevice() -> (id: AudioObjectID, uid: String, name: String)? {
         var devID = AudioObjectID(kAudioObjectUnknown)
         var size = UInt32(MemoryLayout<AudioObjectID>.size)
@@ -137,6 +142,17 @@ final class SystemTap: SystemCapturer {
         live.removeAll()
     }
 
+    /// Tears the tap down, and is safe to call twice.
+    ///
+    /// It has to be, because it is called twice on every normal run: once by the
+    /// recorder when the take ends, and again by `cleanupAll()` from `atexit`. It used
+    /// to clear only `procID`, leaving `aggID` and `tapID` holding the ids it had just
+    /// destroyed, so the second call destroyed them again. Core Audio returns
+    /// `OSStatus 0` for that second destroy, so nothing reported it — but
+    /// `AudioObjectID`s are recycled by `coreaudiod`, and between the two calls sits
+    /// the whole transcriber run. An id reissued to another process in that window
+    /// would have been destroyed out from under it. Clearing the fields is what makes
+    /// the second call a no-op instead of a hazard.
     func stop() {
         if aggID != kAudioObjectUnknown, let p = procID {
             AudioDeviceStop(aggID, p)
@@ -145,6 +161,9 @@ final class SystemTap: SystemCapturer {
         if aggID != kAudioObjectUnknown { AudioHardwareDestroyAggregateDevice(aggID) }
         if tapID != kAudioObjectUnknown { AudioHardwareDestroyProcessTap(tapID) }
         procID = nil
+        aggID = AudioObjectID(kAudioObjectUnknown)
+        tapID = AudioObjectID(kAudioObjectUnknown)
+        SystemTap.live.removeAll { $0 === self }
     }
 
     func takeLevelPeak() -> Float { sink?.takeLevelPeak() ?? 0 }

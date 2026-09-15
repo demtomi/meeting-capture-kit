@@ -16,9 +16,13 @@ protocol SystemCapturer: AnyObject {
     /// until the recording ended. Samples now go to disk as they arrive.
     var sink: SampleSink? { get set }
     // Peak |sample| since the last call, then reset — a cheap live-activity probe
-    // for the app's silence auto-stop. Default 0 (treated as silent) so a capturer
-    // that doesn't implement it (the tap fallback) simply doesn't contribute audio
-    // activity; detection then leans on the mic track alone.
+    // for the app's silence auto-stop. The protocol default is 0, so a capturer that
+    // does not implement it contributes no audio activity and detection leans on the
+    // mic track alone.
+    //
+    // BOTH capturers here implement it. This comment used to name the tap as the one
+    // that does not, which stopped being true when `SystemTap.takeLevelPeak()` was
+    // added; a tap-mode run reports a real `sys=` level.
     func takeLevelPeak() -> Float
 }
 

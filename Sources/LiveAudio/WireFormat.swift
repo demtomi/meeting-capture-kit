@@ -40,8 +40,9 @@ public enum WireFormat {
     /// four bytes: `MCK1` starts a header, anything else starts a frame prefix.
     ///
     /// That works only while no legal `seq` has those four bytes as its little-endian form.
-    /// This is that value, and `nextSeq(after:)` skips it. It is ~1.28e9 frames in — a
-    /// decade of continuous streaming — so the skip will never fire in practice; it exists
+    /// This is that value, and `nextSeq(after:)` skips it. It is 827,016,013 frames in —
+    /// 6.6 years of continuous streaming at 4 frames/s — so the skip will never fire in
+    /// practice; it exists
     /// because "will never happen" is the sentence that precedes an ambiguity nothing can
     /// recover from, and skipping one seq costs the consumer a single visible gap.
     public static let magicSeq: UInt32 = 0x314B_434D
@@ -73,7 +74,7 @@ public enum WireFormat {
     /// 0..3 seq (UInt32 LE) · 4..7 ts (UInt32 LE, milliseconds since the first frame)
     ///
     /// Both fields are 32 bits because `framePrefixBytes` fixes the prefix at 8 bytes.
-    /// `seq` wraps after ~1.36e9 frames (10 years at 4 frames/s) and `ts` after 49.7 days,
+    /// `seq` wraps after 4,294,967,296 frames (34 years at 4 frames/s) and `ts` after 49.7 days,
     /// and a take that reaches either has other problems.
     public static func frame(seq: UInt32, tsMs: UInt32, pcm: [Int16]) -> Data {
         var d = Data(capacity: framePrefixBytes + pcm.count * 2)

@@ -98,6 +98,11 @@ public enum ScreenPreset {
     /// Matched case-insensitively ANYWHERE in the window title. Browser-hosted calls
     /// live here, and so does the Slack huddle window.
     ///
+    /// Case-insensitive on BOTH sides since the matcher lowercases each pattern as well
+    /// as the title. It used to lowercase only the title, so an entry with a capital
+    /// letter silently never matched — the trap a consumer writing `"Zoom Meeting"` into
+    /// the JSON file fell into. The entries below stay lowercase by convention anyway.
+    ///
     /// "zoom meeting" rather than "zoom": the bare word matches a browser tab about
     /// Zoom's pricing page as readily as a call.
     ///
@@ -146,11 +151,13 @@ public enum ScreenPreset {
         /// Bundle IDs where ANY window is a call. Only correct for apps that exist
         /// solely to hold meetings, which is why a chat app must never be added here.
         public var bundleIDs: Set<String>
-        /// Matched case-insensitively ANYWHERE in the window title.
+        /// Matched case-insensitively ANYWHERE in the window title. Case is handled for
+        /// you: the matcher lowercases the pattern as well as the title.
         public var titleNeedles: [String]
         /// Matched case-insensitively against the START of the window title.
         public var titlePrefixes: [String]
         /// Windows smaller than this in either dimension are control strips, not calls.
+        /// A window exactly at the minimum is a call: the comparison is `>=`.
         public var minWidth: Double
         public var minHeight: Double
 
@@ -203,13 +210,20 @@ public enum ScreenPreset {
     /// behaviour and a consumer opts in to their own configuration explicitly.
     public static func isConferenceWindow(_ w: WindowInfo,
                                           using config: ConferenceDetection = .default) -> Bool {
+        // `>=`, so a window EXACTLY at the minimum counts as a call. The comparison was
+        // `>`, which contradicted the field's own documentation ("windows smaller than
+        // this are control strips") and rejected a window at exactly 200x150.
         guard w.isOnScreen,
-              w.frame.width > config.minWidth,
-              w.frame.height > config.minHeight else { return false }
+              w.frame.width >= config.minWidth,
+              w.frame.height >= config.minHeight else { return false }
         if let b = w.bundleID, config.bundleIDs.contains(b) { return true }
+        // BOTH sides are lowercased. Only the title used to be, so a pattern carrying a
+        // capital letter could never match and did so silently — and the JSON extension
+        // point is exactly where a caller writes `"Zoom Meeting"` and gets a no-op that
+        // costs them the right screen for a whole meeting.
         let t = (w.title ?? "").lowercased()
-        if config.titlePrefixes.contains(where: { t.hasPrefix($0) }) { return true }
-        return config.titleNeedles.contains { t.contains($0) }
+        if config.titlePrefixes.contains(where: { t.hasPrefix($0.lowercased()) }) { return true }
+        return config.titleNeedles.contains { t.contains($0.lowercased()) }
     }
 
     // MARK: - Display resolution

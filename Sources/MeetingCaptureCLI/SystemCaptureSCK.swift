@@ -1,8 +1,13 @@
 // System-audio capture via ScreenCaptureKit (the remote-side track).
-// SCK taps app/display audio BEFORE it is rendered to an output device, so it
-// captures the same audio whether output is Mac speakers, wired, or Bluetooth
-// (AirPods) — unlike a Core Audio process tap, which returns silence off a
-// Bluetooth route. Needs Screen Recording permission (TCC), granted once.
+// SCK taps app/display audio BEFORE it is rendered to an output device, so no
+// output device is involved and a route change mid-meeting cannot affect it.
+// Needs Screen Recording permission (TCC), granted once.
+//
+// This comment used to say the Core Audio process tap "returns silence off a
+// Bluetooth route", and that was the stated reason SCK is the default. Measured
+// on macOS 26.6.2 with a Bluetooth default output device, the tap captured that
+// output at peak 0.75. The real difference is that the tap pins to one device at
+// start and SCK never touches one.
 import Foundation
 import CaptureIO
 import ScreenCaptureKit

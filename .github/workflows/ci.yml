@@ -11,20 +11,23 @@ name: CI
 #
 # `Package.swift` declares `platforms: [.macOS("14.2")]`, which is where
 # `AudioHardwareCreateProcessTap` arrives. Any `macos-latest` image in service
-# clears that comfortably, so resolution should not be the thing that fails.
+# clears that comfortably.
 #
-# If it does fail at DEPENDENCY RESOLUTION, before a single source file
-# compiles, that is a runner-version problem and not a test failure. Reading it
-# as one wastes an afternoon. Check the runner against the floor first:
+# A runner BELOW the floor does not fail at resolution. `platforms:` is a
+# deployment target, and this package has no dependencies, so there is no
+# resolution-time host check to fail — a floor set above the host still builds.
+# What fails is COMPILATION, with availability errors out of
+# `SystemTap.swift` and `MicCapture.swift`. So an availability error naming
+# macOS 14.0 here is a runner-version problem, not a test failure; reading it as
+# one wastes an afternoon. Check the runner against the floor first:
 #
 #   - the "Report runner macOS version" step below prints it
 #   - https://github.com/actions/runner-images lists which alias points where
 #
 # The floor was 26.0 until it was measured. That was the development machine's
 # version rather than a requirement, and it locked out every Mac more than two
-# releases old AND kept this workflow from ever resolving. Raising it again
-# needs the same treatment: build at the new floor and run all five checks
-# before changing the number.
+# releases old. Raising it again needs the same treatment: build at the new
+# floor and run all six checks before changing the number.
 # ---------------------------------------------------------------------------
 
 on:
@@ -63,7 +66,7 @@ jobs:
         # `silence-gate-check` also exits 2 when its fixture is missing or empty,
         # so a run that verified nothing cannot read as a pass. Any non-zero code
         # fails the job.
-        # The loop runs all five so one failure does not hide the others.
+        # The loop runs all six so one failure does not hide the others.
         run: |
           set -u
           BIN="$(swift build --show-bin-path)"

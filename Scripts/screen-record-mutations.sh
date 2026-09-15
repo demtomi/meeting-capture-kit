@@ -45,8 +45,15 @@ bad()  { echo "   FAIL $1"; PASS=0; }
 
 # ================================================================= B. swift suite
 echo "== B. screen-record-check (baseline)"
-if swift run screen-record-check >/dev/null 2>&1; then ok "screen-record-check passes clean"
+# The baseline gets its own scratch path for the same reason every mutation
+# does: this script must not write into the caller's `.build`. It used to run
+# here with no --scratch-path, so a single harness run left about 100 MB of
+# build output behind and the README's claim that it leaves your .build alone
+# was false on the first line that builds anything.
+base_scratch="$(mktemp -d)"
+if swift run --scratch-path "$base_scratch" screen-record-check >/dev/null 2>&1; then ok "screen-record-check passes clean"
 else bad "screen-record-check does NOT pass clean"; fi
+rm -rf "$base_scratch"
 
 echo
 echo "== B. screen-record-check under mutation — each must break its NAMED limb"
@@ -112,14 +119,14 @@ mutate_swift "re-add Slack to the conference bundle set" \
 # matching again.
 mutate_swift "drop the Meet title-prefix rule" \
     "a live Google Meet call in Chrome is a call" "$PRESET" \
-    's/        if config.titlePrefixes.contains(where: { t.hasPrefix(\$0) }) { return true }//'
+    's/        if config.titlePrefixes.contains(where: { t.hasPrefix(\$0.lowercased()) }) { return true }//'
 
 # The over-match in the other direction, and the reason the rule is a PREFIX. A bare
 # `meet` needle matches a Meeting Notes document, which would put the pill and the
 # recording on the wrong display for the whole call.
 mutate_swift "loosen the Meet rule to a bare contains" \
     "a Meeting Notes document is NOT a call" "$PRESET" \
-    's/        if config.titlePrefixes.contains(where: { t.hasPrefix(\$0) }) { return true }/        if t.contains("meet") { return true }/'
+    's/        if config.titlePrefixes.contains(where: { t.hasPrefix(\$0.lowercased()) }) { return true }/        if t.contains("meet") { return true }/'
 
 # --- WHICH DISPLAY, AND HOW IT IS SCALED.
 
@@ -134,6 +141,26 @@ mutate_swift "break the built-in fallback" \
 mutate_swift "replace the box with a height cap" \
     "portrait 1080x1920 survives the box intact" "$PRESET" \
     's|let scale = min(1.0, Double(maxLong) / longEdge, Double(maxShort) / shortEdge)|let scale = min(1.0, Double(maxShort) / Double(pixelHeight))|'
+
+# --- CASE, AND THE BOUNDARY. Both of these were live defects and both failed SILENTLY:
+# --- a pattern that never matches and a window that is never a call report nothing at
+# --- all, and the cost lands as the wrong screen recorded for an entire meeting.
+
+# Lowercase only the title, which is what the matcher used to do. A consumer's JSON
+# entry of "Zoom Meeting" then matches nothing, forever, with no error.
+mutate_swift "lowercase the title but not the needle" \
+    "a CAPITALISED needle from a user's JSON still matches" "$PRESET" \
+    's/config.titleNeedles.contains { t.contains(\$0.lowercased()) }/config.titleNeedles.contains { t.contains(\$0) }/'
+
+mutate_swift "lowercase the title but not the prefix" \
+    "a CAPITALISED prefix from a user's JSON still matches" "$PRESET" \
+    's/config.titlePrefixes.contains(where: { t.hasPrefix(\$0.lowercased()) })/config.titlePrefixes.contains(where: { t.hasPrefix(\$0) })/'
+
+# Exclusive size comparison. A window at exactly the documented minimum is discarded,
+# which contradicts the field's own doc comment.
+mutate_swift "make the minimum size exclusive again" \
+    "a window EXACTLY at the minimum size is a call" "$PRESET" \
+    's/w.frame.width >= config.minWidth,/w.frame.width > config.minWidth,/'
 
 # --- THE SIDECAR. The key order must be byte-stable, or a diff of two identical takes is
 # --- noise and the sidecar stops being usable as a completeness record.

@@ -105,6 +105,37 @@ check("a control strip is too small to be a call", !ScreenPreset.isConferenceWin
 check("an offscreen window is not a call", !ScreenPreset.isConferenceWindow(offscreen))
 check("a browser tab about Zoom pricing is not a call", !ScreenPreset.isConferenceWindow(pricingTab))
 
+// --- Case, and the exact-minimum boundary. Both were wrong in the same direction: a
+// silent no-match, which on a multi-display desk costs the right screen for a whole
+// meeting and reports nothing.
+let capitalisedNeedles = ScreenPreset.ConferenceDetection(
+    bundleIDs: [], titleNeedles: ["Zoom Meeting"], titlePrefixes: [],
+    minWidth: 200, minHeight: 150)
+check("a CAPITALISED needle from a user's JSON still matches",
+      ScreenPreset.isConferenceWindow(
+        WindowInfo(bundleID: "com.google.Chrome", appName: "Chrome",
+                   title: "zoom meeting with acme",
+                   frame: Rect(x: 0, y: 0, width: 1200, height: 800), isOnScreen: true),
+        using: capitalisedNeedles))
+// breaks if: only the title is lowercased, so a pattern with a capital letter never matches.
+
+let capitalisedPrefix = ScreenPreset.ConferenceDetection(
+    bundleIDs: [], titleNeedles: [], titlePrefixes: ["Meet – "],
+    minWidth: 200, minHeight: 150)
+check("a CAPITALISED prefix from a user's JSON still matches",
+      ScreenPreset.isConferenceWindow(
+        WindowInfo(bundleID: "com.google.Chrome", appName: "Chrome",
+                   title: "meet – weekly project sync",
+                   frame: Rect(x: 0, y: 0, width: 1200, height: 800), isOnScreen: true),
+        using: capitalisedPrefix))
+// breaks if: the prefix is compared verbatim to a lowercased title, so a capitalised prefix never fires.
+
+let exactlyMinimum = WindowInfo(bundleID: "us.zoom.xos", appName: "zoom.us", title: "Zoom Meeting",
+                                frame: Rect(x: 0, y: 0, width: 200, height: 150), isOnScreen: true)
+check("a window EXACTLY at the minimum size is a call",
+      ScreenPreset.isConferenceWindow(exactlyMinimum))
+// breaks if: the size guard uses > instead of >=, so a window exactly at the minimum is discarded.
+
 // --- Google Meet. Every fixture below is a REAL window title, captured from a live call on
 // 2026-08-06, positives and negatives alike, because the bug was that the rule matched a
 // title nobody had ever looked at. The needles claimed to cover Meet and covered nothing.

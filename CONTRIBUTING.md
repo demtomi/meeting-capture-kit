@@ -10,7 +10,7 @@ What follows is how to build it, how to check it, and the one rule that is not n
 swift build
 ```
 
-You need macOS 14.2 or later. That is the `platforms:` floor in `Package.swift`, and SwiftPM refuses to resolve the package below it. The Command Line Tools are enough. A full Xcode install is not required, because nothing here links XCTest.
+You need macOS 14.2 or later. That is the `platforms:` floor in `Package.swift`, and the compiler is what holds it: below 14.2 the availability errors in `SystemTap.swift` and `MicCapture.swift` fail the build. `platforms:` itself is a deployment target, not a host gate, so do not expect SwiftPM to stop you. The Command Line Tools are enough. A full Xcode install is not required, because nothing here links XCTest.
 
 ## Run the checks
 
@@ -66,7 +66,7 @@ bash Scripts/screen-record-mutations.sh
 
 Every mutation in them has been observed to make its named check go red. A build failure never counts as a bite, because it would fail every mutation equally. A runtime trap counts only where the mutation is declared to expect one: `live-audio-mutations.sh` marks two mutations `<crash>`, on the PCM16 clamp in `Mixer` and the frame-readiness guard in `FrameAssembler`, and greps for `Fatal error`, `Illegal instruction` or `Trace/BPT` to tell a trap from a compile error. Everywhere else a trap is reported as having tested nothing.
 
-Each script backs up what it touches, restores from an `EXIT INT TERM` trap, prints one `ok` or `FAIL` line per mutation, and ends with a pass or fail banner. Each rebuilds into its own `--scratch-path`, so none of them touches your `.build`. `live-audio-mutations.sh` carries many more mutations than the other four and takes correspondingly longer.
+Each script backs up what it touches, restores from an `EXIT INT TERM` trap, prints one `ok` or `FAIL` line per mutation, and ends with a pass or fail banner. Every build a script runs, the baseline included, goes into its own `--scratch-path`, so none of them touches your `.build`. If you add a step that builds, give it a scratch path too. `live-audio-mutations.sh` carries many more mutations than the other four and takes correspondingly longer.
 
 `MeetingCaptureCLI` has no mutation script at all. It is the one part that needs a real audio device. If your change is in the capture path, say in the pull request how you tested it and what you could not test.
 

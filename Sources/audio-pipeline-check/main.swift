@@ -145,12 +145,46 @@ do {
           breaksIf: "the guard returns `samples`, so 48 kHz audio gets a 16 kHz header and plays 3x fast")
 
     var threw2 = false
+    let neverPath = tmp.appendingPathComponent("never.wav").path
     do { _ = try Audio.streamResampleToWav(rawURL: tmp.appendingPathComponent("does-not-exist.f32"),
                                            nativeRate: 48000, leadFrames: 0,
-                                           to: tmp.appendingPathComponent("never.wav").path)
+                                           to: neverPath)
     } catch { threw2 = true }
     check("a missing raw capture file throws", threw2,
           breaksIf: "a missing scratch file yields an empty WAV reported as a successful recording")
+
+    // The half of this section's own title that it used to leave untested. Throwing is
+    // the easy half; the file is the half a user opens. A 44-byte placeholder header
+    // at the destination is not a RIFF file and not a recording, and it used to be
+    // exactly what this case left behind.
+    check("and leaves NO file at the destination",
+          !FileManager.default.fileExists(atPath: neverPath),
+          breaksIf: "the writer opens the destination directly, so a failed finalize leaves a 44-byte non-RIFF stub where the recording was announced")
+
+    var threw4 = false
+    let rateFailPath = tmp.appendingPathComponent("badrate.wav").path
+    do { _ = try Audio.streamResampleToWav(rawURL: tmp.appendingPathComponent("lead.f32"),
+                                           nativeRate: -1, leadFrames: 0,
+                                           to: rateFailPath)
+    } catch { threw4 = true }
+    check("an impossible rate throws in the streaming path too", threw4,
+          breaksIf: "converter setup failure is swallowed and the raw samples are written under a 16 kHz header")
+    check("and that failure leaves NO file either",
+          !FileManager.default.fileExists(atPath: rateFailPath),
+          breaksIf: "the destination is opened before the converter is built, so a setup failure strands an empty stub")
+
+    // A destination that exists ALREADY must survive a failed rewrite. The temp-file
+    // move is what makes that true: without it the previous take is truncated to 44
+    // bytes the moment the new one starts, and lost when the new one fails.
+    let occupied = tmp.appendingPathComponent("occupied.wav").path
+    FileManager.default.createFile(atPath: occupied, contents: Data("PRIOR-TAKE".utf8))
+    var threw5 = false
+    do { _ = try Audio.streamResampleToWav(rawURL: tmp.appendingPathComponent("does-not-exist.f32"),
+                                           nativeRate: 48000, leadFrames: 0, to: occupied)
+    } catch { threw5 = true }
+    check("a failed write does not destroy the file already at the destination",
+          threw5 && (try? Data(contentsOf: URL(fileURLWithPath: occupied))) == Data("PRIOR-TAKE".utf8),
+          breaksIf: "the destination is opened for writing before the work that can fail, so a failed take eats the previous one")
 
     var threw3 = false
     do { _ = try Audio.streamResampleToWav(rawURL: tmp.appendingPathComponent("lead.f32"),
@@ -198,6 +232,30 @@ do {
     check("a stereo pair is averaged, not summed (\(got))",
           abs(got[0] - 0.5) < 1e-6 && abs(got[2] - 0.4) < 1e-6,
           breaksIf: "channels are summed, so anything centred in the mix clips")
+
+    // `finish()` JOINS the flush thread rather than outwaiting it. These two cases
+    // exist because a join has failure modes a sleep does not: it can wait on a thread
+    // that was never started, and it can wait a second time on one that has already
+    // gone. Both hang forever if the handshake is wrong, and a hang in a CI runner
+    // reads as an infrastructure problem rather than as this defect.
+    //
+    // HONEST LIMIT: neither of these reproduces the race the join was added to close.
+    // That needed a write slow enough to outlast the old 250 ms sleep, which at the
+    // 38 KB production chunk size does not happen on a local disk. What is covered
+    // here is the new code, not the old bug.
+    let sink3 = try SampleSink(directory: dir.path, name: "never-started")
+    let lone: [Float] = [0.25, 0.25]
+    lone.withUnsafeBufferPointer { sink3.append($0.baseAddress!, count: 2) }
+    try sink3.finish()
+    let size3 = try FileManager.default.attributesOfItem(atPath: sink3.url.path)[.size] as! Int
+    check("finish() on a sink that was never started still writes its staging (\(size3) bytes)",
+          size3 == 2 * MemoryLayout<Float>.size,
+          breaksIf: "finish() waits unconditionally on a flush thread that does not exist, and the call never returns")
+
+    try sink3.finish()
+    check("finish() is idempotent and the second call does not hang",
+          true,
+          breaksIf: "the flusher handshake is consumed once, so a second finish() blocks forever")
 }
 
 print("\n" + (failures == 0 ? "audio-pipeline-check OK" : "\(failures) check(s) FAILED"))

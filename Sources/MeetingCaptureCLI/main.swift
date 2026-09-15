@@ -51,14 +51,17 @@ USAGE
   meeting-capture --label <name> [options]
 
 OPTIONS
-  --label <name>          Name for this recording. Used in the output path.
+  --label <name>          Name for this recording. Written to the manifest. The
+                          output directory is named from the UTC start time, not
+                          from this.
   --source <mode>         mic+system (default) | mic | mic-multi
                           mic+system  both sides, for a virtual call
                           mic         one microphone, one speaker
                           mic-multi   one microphone, several people in the room
   --capture <mode>        sck (default) | tap
-                          sck  ScreenCaptureKit. Works with Bluetooth output.
-                          tap  Core Audio process tap. Wired or built-in output.
+                          sck  ScreenCaptureKit. Survives an output route change.
+                          tap  Core Audio process tap. Pinned at start to the
+                               default output device, Bluetooth included.
   --seconds <n>           Stop after n seconds. Default: run until you stop it.
   --host <name>           Speaker label for the mic track. Default: your account name.
   --lang <code>           Advisory language hint, written to the manifest.

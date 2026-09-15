@@ -160,8 +160,15 @@ mutate_invariant "drop the frontmatter matcher" inv_both_slots_are_matched "$NAM
 # ===================================================================== B. suite baseline
 echo
 echo "== B. speaker-naming-check (baseline)"
-if swift run speaker-naming-check >/dev/null 2>&1; then ok "speaker-naming-check passes clean"
+# The baseline gets its own scratch path for the same reason every mutation
+# does: this script must not write into the caller's `.build`. It used to run
+# here with no --scratch-path, so a single harness run left about 100 MB of
+# build output behind and the README's claim that it leaves your .build alone
+# was false on the first line that builds anything.
+base_scratch="$(mktemp -d)"
+if swift run --scratch-path "$base_scratch" speaker-naming-check >/dev/null 2>&1; then ok "speaker-naming-check passes clean"
 else bad "speaker-naming-check does NOT pass clean"; fi
+rm -rf "$base_scratch"
 
 echo
 echo "== B. speaker-naming-check under mutation — each must break its NAMED limb"

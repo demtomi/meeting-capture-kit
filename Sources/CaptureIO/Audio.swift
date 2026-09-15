@@ -120,8 +120,12 @@ public enum Audio {
     ///
     /// The RIFF and data sizes are not known until the last sample is written, so the
     /// header goes down as a placeholder and is patched on `finish()`. The file is
-    /// therefore INVALID until `finish()` returns, which is why the caller writes to a
-    /// temporary path and moves it into place only on success.
+    /// therefore INVALID until `finish()` returns, which is why `streamResampleToWav`
+    /// writes to a temporary path and moves it into place only on success.
+    ///
+    /// This comment used to say the CALLER did that, and no caller did. A throw
+    /// anywhere after the writer was constructed left a 44-byte all-zero file — not
+    /// even RIFF — sitting at the destination the recorder had just announced.
     public final class WavWriter {
         private let handle: FileHandle
         private let path: String
@@ -179,7 +183,18 @@ public enum Audio {
                                     to path: String) throws -> Double {
         let chunkFrames = 1 << 16       // 65,536 frames, about 1.4 s at 48 kHz
 
-        let writer = try WavWriter(path: path)
+        // EVERY failure below this line must leave the destination untouched, so the
+        // whole write goes to a sibling temp file and is moved into place as the last
+        // act. A half-written WAV carries a placeholder header of 44 zero bytes, which
+        // is not even a RIFF file, and it used to be written straight to `path` — so a
+        // converter that failed to start produced an announced recording that no
+        // player would open, from a process that then printed an error and exited 1.
+        let tmpPath = path + ".partial"
+        try? FileManager.default.removeItem(atPath: tmpPath)
+        var moved = false
+        defer { if !moved { try? FileManager.default.removeItem(atPath: tmpPath) } }
+
+        let writer = try WavWriter(path: tmpPath)
         let passthrough = abs(nativeRate - targetRate) < 1
 
         var conv: AVAudioConverter?
@@ -293,6 +308,13 @@ public enum Audio {
         }
 
         try writer.finish()
+        // The header is patched and the handle is closed, so the temp file is a valid
+        // WAV for the first time. Only now does it get the name the caller announced.
+        if FileManager.default.fileExists(atPath: path) {
+            try FileManager.default.removeItem(atPath: path)
+        }
+        try FileManager.default.moveItem(atPath: tmpPath, toPath: path)
+        moved = true
         return Double(writer.framesWritten) / targetRate
     }
 }

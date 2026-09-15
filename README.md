@@ -2,7 +2,7 @@
 
 Dual-track meeting audio capture on macOS, plus six small libraries carved out of a private meeting-recorder app.
 
-The part worth your attention is `SystemTap`. It captures system audio with a Core Audio **process tap**: `AudioHardwareCreateProcessTap` wrapped in a private aggregate device with an `AudioDeviceIOProcID`. Apple ships no sample code for this path and the header documentation is thin, so most attempts at it return silence or fail at aggregate-device creation. It is built and run on macOS 26 on Apple Silicon. A ScreenCaptureKit path sits beside it as the default, because the process tap goes quiet on a Bluetooth output route.
+The part worth your attention is `SystemTap`. It captures system audio with a Core Audio **process tap**: `AudioHardwareCreateProcessTap` wrapped in a private aggregate device with an `AudioDeviceIOProcID`. Apple ships no sample code for this path and the header documentation is thin. The public reference implementation most people find is [insidegui/AudioCap](https://github.com/insidegui/AudioCap), which is where to look for the same API in sample-code form. What this adds beside it is the aggregate being pinned to the current default output device, dual-track capture with a shared start, and a set of checks that run without any of the grants the capture itself needs. A ScreenCaptureKit path sits beside it as the default; see [Which backend](#where-the-tap-loses) for what that choice actually rests on.
 
 **Every verification executable here runs with no microphone grant, no screen-recording grant, no display and no network**, which is what lets the whole suite run on a CI runner. See [Checks](#checks).
 
@@ -35,13 +35,21 @@ Three things have to line up, and each fails quietly rather than loudly:
 
 ### Where the tap loses
 
-The tap returns silence when output goes to a Bluetooth route such as AirPods. ScreenCaptureKit taps app audio before it reaches an output device, so it captures the same audio on any route. That is why `--capture sck` is the default and `--capture tap` is the fallback for wired or built-in output.
+**This section used to say the tap returns silence on a Bluetooth route such as AirPods, and that this was why `sck` is the default. That claim did not survive being measured.** On macOS 26.6.2 with AirPods Pro as the default output device (`Transport: Bluetooth`, confirmed through `kAudioDevicePropertyTransportType`), `--capture tap` recorded speech at peak 0.7487 and rms 2486, with audio present in every one-second window from t=5 s to t=10 s of an 11.5 s take. The tap bound to the Bluetooth device and captured it.
+
+What is still true is narrower, and it is the honest reason to keep both backends:
+
+- **The tap's aggregate is pinned to the default output device at start.** `SystemTap.defaultOutputDevice()` reads it once. Change the output route mid-meeting and the tap keeps listening to the device you left. ScreenCaptureKit taps app audio before it reaches any output device, so a route change does not affect it.
+- **The tap's first buffer can be late, and whatever played before it is gone.** The window between the shared start and the first delivered buffer is written as leading silence, and no track holds the audio from it. In the run measured above, speech that began about 2 s into the take first appears in `system.wav` at 5 s. That is one observation on one device and the startup cost of the Bluetooth route is not separated from the tap's own, so treat it as "this can be seconds", not as a figure.
+- **They need different grants.** `sck` requires Screen Recording. Whether the tap demands its own grant is **untested** here (see [Permissions](#permissions)).
+
+So `--capture sck` stays the default for the route-change case and the startup window, not for Bluetooth. If you have a Bluetooth route and the tap records silence for you, that is worth an issue with your macOS version and device — it is not the documented behaviour any more.
 
 ---
 
 ## Requirements
 
-- **macOS 14.2 or later.** That is the `platforms:` floor in `Package.swift`, and it is not advisory: SwiftPM refuses to resolve the package on an older host. 14.2 is where `AudioHardwareCreateProcessTap` arrives, so the system-audio path sets the floor for everything. Verified: the package builds clean and every check exits 0 at this deployment target, compiled and run on macOS 26. Not verified: whether the process tap behaves correctly at runtime on 14.x. If you are on 14 or 15 and the tap records silence, use `--capture sck` and file an issue with your version. Only `CaptureIO` and the CLI touch system audio. The other libraries carry no such doubt.
+- **macOS 14.2 or later.** That is the `platforms:` floor in `Package.swift`. 14.2 is where `AudioHardwareCreateProcessTap` arrives, so the system-audio path sets the floor for everything. **What enforces it is the compiler, not SwiftPM.** `platforms:` is a deployment target, and a root package with no dependencies has no resolution-time host check to fail — setting the floor to a version *above* this host still builds at exit 0. Lower it to 13.0 and the build fails properly, with `'init(stereoGlobalTapButExcludeProcesses:)' is only available in macOS 14.0 or newer` from `SystemTap.swift:64` and `'microphone' is only available in macOS 14.0 or newer` from `MicCapture.swift:68`. Both measured on this package. The earlier claim here, that SwiftPM refuses to resolve on an older host, was wrong. Verified: the package builds clean and every check exits 0 at this deployment target, compiled and run on macOS 26. Not verified: whether the process tap behaves correctly at runtime on 14.x. If you are on 14 or 15 and the tap records silence, use `--capture sck` and file an issue with your version. Only `CaptureIO` and the CLI touch system audio. The other libraries carry no such doubt.
 - **Swift 6 toolchain.** `swift-tools-version: 6.0`. The `MeetingCaptureCLI` target builds in Swift 5 language mode on purpose, because it bridges async ScreenCaptureKit and AVFoundation calls to a synchronous `main` through semaphores, and Swift 6 strict concurrency flags those patterns.
 - **Command Line Tools are enough.** The checks are plain executables, not XCTest targets, so no full Xcode install is needed to run them.
 - **Apple Silicon.** Built and run on Apple Silicon only. `efficiencyCoreCount()` reads `hw.perflevel1.logicalcpu` and falls back to half the logical cores when that sysctl is absent, so the Intel path should degrade rather than break, but **nothing here has been run on Intel** and no claim is made about it.
@@ -110,9 +118,9 @@ Every flag `meeting-capture` accepts. An unrecognised argument is a refusal with
 
 | Flag | Value | Meaning |
 |---|---|---|
-| `--label` | `<name>` | Name for this recording. Used in the output path. |
+| `--label` | `<name>` | Name for this recording, written to the manifest as `label`. It does **not** appear in the output path: the per-meeting directory is `<utc-start-time>-<4 hex digits>`, so two takes a second apart never collide and a label never has to be filesystem-safe. |
 | `--source` | `mic+system` (default), `mic`, `mic-multi` | `mic+system` records both sides of a virtual call. `mic` is one microphone and one speaker. `mic-multi` is one microphone and several people in the room. Any other value exits 2. |
-| `--capture` | `sck` (default), `tap` | `sck` is ScreenCaptureKit and works with Bluetooth output. `tap` is the Core Audio process tap, for wired or built-in output. Any other value exits 2. |
+| `--capture` | `sck` (default), `tap` | `sck` is ScreenCaptureKit and is unaffected by a mid-meeting output route change. `tap` is the Core Audio process tap, pinned at start to the default output device. Both capture Bluetooth output. Any other value exits 2. |
 | `--seconds` | `<n>` | Stop after n seconds. Default is to run until you stop it. Must be a positive number. |
 | `--host` | `<name>` | Speaker label for the mic track in the manifest. Defaults to your account's full name. |
 | `--lang` | `<code>` | Advisory language hint. Written to the manifest and used by nothing in this package. |
@@ -161,6 +169,8 @@ The `sys=` field is **omitted entirely** when there is no system capturer, so a 
 ## Libraries
 
 Six library products, split out for one reason: each is wrong in ways a compiler cannot see, and each has to be replayable without launching anything or granting a permission.
+
+**Two of the six are used by the `meeting-capture` CLI. Four are not.** `CaptureIO` and `SilenceGate` are on the path every recording takes. `ScreenPreset`, `SpeakerNaming`, `MeetingPresence` and `LiveAudio` came out of the same private app and ship here as components with their own checks and no caller in this package — `ScreenPreset` is imported only by `MeetingPresence` and by two checks. Nothing here records a screen, renames a speaker, watches for a meeting window, or streams audio over a wire. If you want one of those four, you are taking a library and writing the caller yourself. That is a fair trade for code this heavily falsified, but it should not be a discovery you make after cloning.
 
 `CaptureIO` is the one the CLI itself is built on. It holds the resampler, the WAV writer and the disk-backed capture buffer, so recording a long meeting does not hold the meeting in memory. It lived inside the executable, where no check could import it, which is how the one path every user runs ended up as the only path with no coverage.
 
@@ -224,7 +234,9 @@ Three guards keep it from cutting a live meeting:
 - A stop needs the host to have been quiet too. `micActiveLevel` at 0.08 asks "is the host talking", well above the 0.02 that asks "is there any sound". It is an extra condition on stopping, so it can only ever prevent a stop, never cause one. Presenting to a muted room does not get you cut off.
 - "Keep recording" resets both clocks, not just one, so the stop does not land on schedule anyway.
 
-`SilenceGate` is **not wired into** `meeting-capture`. The CLI emits the lines and the gate parses them, but no code here connects the two. Reading stderr and acting on the decision is yours to write.
+`SilenceGate` **is** wired into `meeting-capture`, behind `--auto-stop`. The CLI feeds it the same level readings it prints, warns when the gate says the room has gone quiet, and ends the take when the gate says the meeting is over. Without `--auto-stop` the gate is not consulted and a run stops only when you stop it or `--seconds` expires.
+
+Used as a library on its own, it is pure: levels in, a decision out, no clock and no I/O, which is what lets `silence-gate-check` replay a 50-minute call against it in milliseconds.
 
 ### MeetingPresence
 
@@ -285,7 +297,7 @@ bash Scripts/meeting-presence-mutations.sh
 bash Scripts/live-audio-mutations.sh
 ```
 
-Every mutation in them has been observed to make its named check go red. Sources are mutated in place and restored from an `EXIT INT TERM` trap, so an interrupt still puts the tree back. Each script prints one `ok` or `FAIL` line per mutation and a pass or fail banner at the end, so the result comes from the run rather than from this file. Each rebuilds into its own `--scratch-path` and leaves your `.build` alone. `live-audio-mutations.sh` carries many more mutations than the other four and takes correspondingly longer.
+Every mutation in them has been observed to make its named check go red. Sources are mutated in place and restored from an `EXIT INT TERM` trap, so an interrupt still puts the tree back. Each script prints one `ok` or `FAIL` line per mutation and a pass or fail banner at the end, so the result comes from the run rather than from this file. Each build a script runs — the baseline and every mutation — goes into its own `--scratch-path`, so a harness run leaves your `.build` untouched. Measured: `rm -rf .build`, run `screen-record-mutations.sh`, and `.build` is still absent afterwards. The baseline run used to omit the flag, which put about 100 MB there on the first line that builds anything. `live-audio-mutations.sh` carries many more mutations than the other four and takes correspondingly longer.
 
 **What counts as a bite.** A compile error never counts. It would fail every mutation equally and says nothing about the limb, so every script separates it from a real red and reports it as having tested nothing.
 
