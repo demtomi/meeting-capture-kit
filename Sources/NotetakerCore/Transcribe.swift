@@ -156,6 +156,7 @@ public final class TakeTranscriber {
             base: base.url, key: key,
             sleep: { s in Thread.sleep(forTimeInterval: s * knobs.backoffScale) },
             timeoutOverride: knobs.timeoutSeconds,
+            sendStallOverride: knobs.sendStallSeconds,
             onAttempt: { r, result in
                 self.log(String(format: "[transcribe] upload take=%@ track=%@ audio_seconds=%.1f result=%@",
                                 m.meetingID, r.track, r.audioSeconds, result))
@@ -262,6 +263,7 @@ public struct TestKnobs {
     public var heartbeatSeconds: Double?
     public var cooldownSeconds: Double?
     public var holdAfterClaim: String?
+    public var sendStallSeconds: Double?
     /// Install writes every file but does not call launchctl.
     public var noLaunchctl = false
     public init() {}
@@ -296,6 +298,7 @@ public struct RuntimeEnv {
         k.cooldownSeconds = e["MEETING_TRANSCRIBE_TEST_COOLDOWN_SECONDS"].flatMap(Double.init)
         k.holdAfterClaim = e["MEETING_TRANSCRIBE_TEST_HOLD_AFTER_CLAIM"]
         k.noLaunchctl = e["MEETING_TRANSCRIBE_TEST_NO_LAUNCHCTL"] != nil
+        k.sendStallSeconds = e["MEETING_TRANSCRIBE_TEST_SEND_STALL_SECONDS"].flatMap(Double.init)
         return RuntimeEnv(apiBaseOverride: e["MEETING_TRANSCRIBE_API_BASE"], testKey: e["MEETING_TRANSCRIBE_TEST_KEY"], testKnobs: k)
     }
 }

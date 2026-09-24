@@ -39,6 +39,10 @@ final class StubServer: @unchecked Sendable {
     var defaultResponse: (StubRequest) -> StubResponse
     var userResponse = StubResponse(status: 200, body: #"{"subscription":{"tier":"test"}}"#)
     private(set) var port: UInt16 = 0
+    /// When set, a new connection is accepted and read ONCE, then never read again and never
+    /// answered, so the client's send blocks on a full socket buffer.
+    var stallUploads = false
+    private var stalled: [NWConnection] = []
 
     init(defaultResponse: @escaping (StubRequest) -> StubResponse) throws {
         self.defaultResponse = defaultResponse
@@ -67,7 +71,8 @@ final class StubServer: @unchecked Sendable {
     func stop() { listener.cancel() }
 
     func reset() {
-        lock.lock(); _requests = []; script = [:]; lock.unlock()
+        lock.lock(); _requests = []; script = [:]; stalled.forEach { $0.cancel() }; stalled = []; lock.unlock()
+        stallUploads = false
     }
 
     func enqueue(_ track: String, _ responses: [StubResponse]) {
@@ -81,6 +86,11 @@ final class StubServer: @unchecked Sendable {
     // ------------------------------------------------------------------ plumbing
     private func accept(_ conn: NWConnection) {
         conn.start(queue: queue)
+        if stallUploads {
+            lock.lock(); stalled.append(conn); lock.unlock()
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 4096) { _, _, _, _ in }
+            return
+        }
         read(conn, buffer: Data())
     }
 

@@ -611,6 +611,33 @@ check("c the idle timeout covers server processing: it is never shorter than the
       [60.0, 3600, 36_000].allSatisfy { ScribeClient.requestTimeout(audioSeconds: $0) >= ScribeClient.resourceTimeout(audioSeconds: $0) },
       breaksIf: "the idle timeout fires while the provider is still processing, and the take is uploaded and billed again")
 
+do {
+    // A send that stops moving must be noticed in minutes, not after the long processing wait
+    // the idle timeout now allows. The stub reads once and then never again, so a 9.6 MB body
+    // blocks on a full socket buffer. The child is killed after 20 s if it has not given up.
+    stub.reset()
+    stub.stallUploads = true
+    let home = freshHome("stall")
+    let t = makeTake(in: freshOutputDir("stall"), source: "mic", mic: wavData(seconds: 300, amplitude: 8000), system: nil)
+    let l = launch([t.manifest.path], home: home, env: ["MEETING_TRANSCRIBE_TEST_SEND_STALL_SECONDS": "2"])
+    let finished = waitFor(20) { !l.proc.isRunning }
+    if !finished { l.proc.terminate() }
+    let r = l.wait()
+    stub.reset()
+    check("c a stalled upload is abandoned as transient long before the processing timeout",
+          finished && r.rc == 1 && r.out.contains("stalled"),
+          breaksIf: "the long idle timeout also covers the send, so a stalled upload holds the drain for up to about 2 h (finished \(finished), rc \(r.rc))")
+
+    // The other side: once the whole body is sent, a slow answer is processing, not a stall.
+    stub.reset()
+    let t2 = makeTake(in: freshOutputDir("stall-not"), source: "mic", system: nil)
+    stub.enqueue("mic", [StubResponse(status: 200, body: scribeJSON(track: "mic", diarize: false), delay: 3)])
+    let r2 = run([t2.manifest.path], home: home, env: ["MEETING_TRANSCRIBE_TEST_SEND_STALL_SECONDS": "1"])
+    check("c a slow answer after the whole body is sent is waited for, not called a stall",
+          r2.rc == 0 && stub.uploads(track: "mic") == 1,
+          breaksIf: "the watchdog also fires while the provider processes, and cancels (and re-bills) a working request (rc \(r2.rc))")
+}
+
 print("\n[c] HOW THE WORKER TREATS EACH EXIT")
 do {
     let home = freshHome("cw")

@@ -74,6 +74,8 @@ public final class ScribeClient {
     /// mid-processing and the take was uploaded and billed again.
     public static func requestTimeout(audioSeconds: Double) -> Double { resourceTimeout(audioSeconds: audioSeconds) }
     public static let backoff: [Double] = [30, 60, 120]
+    /// While the body is being sent, no progress for this long abandons the attempt.
+    public static let sendStallSeconds: Double = 300
     static let accountBodies = ["quota_exceeded", "max_character_limit_exceeded", "payment_required",
                                 "insufficient_credits", "invalid_api_key", "missing_api_key"]
 
@@ -81,14 +83,16 @@ public final class ScribeClient {
     let key: String
     let sleep: (Double) -> Void
     let timeoutOverride: Double?
+    let sendStallOverride: Double?
     /// Called once per upload attempt, with the HTTP status or the error. This is the
     /// spend log: every attempt is billable audio whether or not it came back.
     let onAttempt: (ScribeRequest, String) -> Void
 
     public init(base: URL, key: String, sleep: @escaping (Double) -> Void = { Thread.sleep(forTimeInterval: $0) },
-                timeoutOverride: Double? = nil, onAttempt: @escaping (ScribeRequest, String) -> Void = { _, _ in }) {
+                timeoutOverride: Double? = nil, sendStallOverride: Double? = nil,
+                onAttempt: @escaping (ScribeRequest, String) -> Void = { _, _ in }) {
         self.base = base; self.key = key; self.sleep = sleep
-        self.timeoutOverride = timeoutOverride; self.onAttempt = onAttempt
+        self.timeoutOverride = timeoutOverride; self.sendStallOverride = sendStallOverride; self.onAttempt = onAttempt
     }
 
     /// The one table.
@@ -135,17 +139,33 @@ public final class ScribeClient {
         cfg.timeoutIntervalForRequest = timeoutOverride ?? Self.requestTimeout(audioSeconds: r.audioSeconds)
         cfg.timeoutIntervalForResource = timeoutOverride ?? Self.resourceTimeout(audioSeconds: r.audioSeconds)
         cfg.waitsForConnectivity = false
-        let session = URLSession(configuration: cfg)
+        let watch = SendWatch()
+        let session = URLSession(configuration: cfg, delegate: watch, delegateQueue: nil)
         defer { session.finishTasksAndInvalidate() }
         let done = DispatchSemaphore(value: 0)
         var status: Int?; var body = Data(); var error: String?
-        session.uploadTask(with: req, fromFile: URL(fileURLWithPath: bodyFile)) { d, resp, e in
+        let task = session.uploadTask(with: req, fromFile: URL(fileURLWithPath: bodyFile)) { d, resp, e in
             status = (resp as? HTTPURLResponse)?.statusCode
             body = d ?? Data()
             error = e.map { ($0 as NSError).localizedDescription }
             done.signal()
-        }.resume()
+        }
+        // Stalled-send watchdog. URLSession cannot change a task's idle timeout mid-flight, and
+        // that timeout must be long enough for the provider to process after the upload. So
+        // while the BODY is still going out, this timer cancels the task if no bytes have moved
+        // for sendStallSeconds (300 s). Once the whole body is sent, only the long idle and
+        // total timeouts apply.
+        let stallLimit = sendStallOverride ?? Self.sendStallSeconds
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        timer.schedule(deadline: .now() + min(1, stallLimit / 2), repeating: min(1, stallLimit / 2))
+        timer.setEventHandler { if watch.stalled(for: stallLimit) { task.cancel() } }
+        timer.resume()
+        task.resume()
         done.wait()
+        timer.cancel()
+        if watch.didStall {
+            return (nil, Data(), "upload stalled: no bytes sent for \(Int(stallLimit)) s")
+        }
         return (error == nil ? status : nil, body, error)
     }
 
@@ -167,5 +187,28 @@ public final class ScribeClient {
             }
             return Self.classify(status: status, body: body)
         }
+    }
+}
+
+/// Tracks upload progress for the stalled-send watchdog.
+final class SendWatch: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastProgress = Date()
+    private var sent: Int64 = 0
+    private var expected: Int64 = -1
+    private(set) var didStall = false
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+                    totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
+        lock.lock(); lastProgress = Date(); sent = totalBytesSent; expected = totalBytesExpectedToSend; lock.unlock()
+    }
+
+    /// True once, when the body is not fully sent and nothing moved for `limit` seconds.
+    func stalled(for limit: Double) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let bodyDone = expected > 0 && sent >= expected
+        guard !didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }
+        didStall = true
+        return true
     }
 }

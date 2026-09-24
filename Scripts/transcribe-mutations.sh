@@ -302,6 +302,12 @@ limb "a take is deleted in place" "$CLAIM" \
 limb "a crash's tombstone is never cleaned" "$WORKER" \
     's/^        clearTombstones()$/        _ = 0/' \
     "tomb: a tombstone left by a crash is cleaned by the next drain, and is never transcribed"
+limb "the stalled-send watchdog never fires" "$CLIENT" \
+    's/        timer.setEventHandler { if watch.stalled(for: stallLimit) { task.cancel() } }/        timer.setEventHandler { }/' \
+    "c a stalled upload is abandoned as transient long before the processing timeout"
+limb "the watchdog also fires during processing" "$CLIENT" \
+    's/        guard !didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }/        guard !didStall, Date().timeIntervalSince(lastProgress) > limit else { return false }/' \
+    "c a slow answer after the whole body is sent is waited for, not called a stall"
 
 echo
 echo "======================================================="
