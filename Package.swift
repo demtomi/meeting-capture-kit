@@ -26,6 +26,7 @@ let package = Package(
         .library(name: "CaptureIO", targets: ["CaptureIO"]),
         .library(name: "NotetakerCore", targets: ["NotetakerCore"]),
         .executable(name: "meeting-capture", targets: ["MeetingCaptureCLI"]),
+        .executable(name: "meeting-transcribe", targets: ["meeting-transcribe"]),
     ],
     targets: [
         // Dual-track capture CLI: Core Audio process tap (system audio) plus
@@ -51,6 +52,15 @@ let package = Package(
         .target(
             name: "NotetakerCore",
             path: "Sources/NotetakerCore",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // The reference transcriber and queue worker: uploads a take to ElevenLabs on the
+        // taker's own key and writes a transcript. Swift 5 mode for the same semaphore
+        // bridging the capture CLI does.
+        .executableTarget(
+            name: "meeting-transcribe",
+            dependencies: ["NotetakerCore"],
+            path: "Sources/meeting-transcribe",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // Pure transcript speaker-relabeling. Its own library so it is verifiable

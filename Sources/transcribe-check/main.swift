@@ -249,6 +249,448 @@ do {
           breaksIf: "the slug keeps a path separator or a leading dot")
 }
 
+// ================================================================== WORKER AND TRANSCRIBER
+// Everything below runs the REAL `meeting-transcribe` binary as a child process, pointed at
+// the loopback stub. It is found next to this check, so `swift build` must have built it.
+let transcribeBin = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
+    .deletingLastPathComponent().appendingPathComponent("meeting-transcribe").path
+guard fm.isExecutableFile(atPath: transcribeBin) else {
+    missing("meeting-transcribe is not built next to this check (\(transcribeBin)). Run `swift build` first")
+}
+
+/// A synthetic speech-to-text response. No real speech: fixed words, fixed times.
+func scribeJSON(track: String, diarize: Bool) -> String {
+    let words: [(String, Double, Double, String)] = track == "mic"
+        ? [("hello", 0.10, 0.40, "speaker_0"), ("there", 0.50, 0.80, "speaker_0")]
+        : diarize ? [("yes", 0.20, 0.45, "speaker_0"), ("okay", 0.90, 1.10, "speaker_1")]
+                  : [("yes", 0.20, 0.45, "speaker_0"), ("okay", 0.90, 1.10, "speaker_0")]
+    var items: [String] = []
+    for (i, w) in words.enumerated() {
+        if i > 0 { items.append(#"{"text":" ","start":\#(w.1),"end":\#(w.1),"type":"spacing","speaker_id":"\#(w.3)"}"#) }
+        items.append(#"{"text":"\#(w.0)","start":\#(w.1),"end":\#(w.2),"type":"word","speaker_id":"\#(w.3)"}"#)
+    }
+    return #"{"language_code":"eng","language_probability":0.99,"text":"x","audio_duration_secs":1.0,"words":[\#(items.joined(separator: ","))]}"#
+}
+stub.defaultResponse = { req in
+    StubResponse(status: 200, body: scribeJSON(track: req.track ?? "mic", diarize: req.fields["diarize"] == "true"))
+}
+
+// No real key may reach any child. The children get a built environment, never this one.
+unsetenv("ELEVENLABS_API_KEY")
+
+enum ConsentFixture { case valid, none, mismatch }
+func freshHome(_ name: String, consent: ConsentFixture = .valid) -> URL {
+    let h = freshOutputDir("home-" + name)
+    let path = h.path + "/.config/meeting-capture/consent"
+    switch consent {
+    case .valid: try! Consent.write(Consent.currentRecord(), to: path)
+    case .mismatch:
+        var r = Consent.currentRecord(); r.disclosure_sha256 = String(repeating: "0", count: 64)
+        try! Consent.write(r, to: path)
+    case .none: break
+    }
+    return h
+}
+
+func toolEnv(home: URL, _ extra: [String: String]) -> [String: String] {
+    var e: [String: String] = [
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": home.path, "TMPDIR": NSTemporaryDirectory(),
+        "MEETING_TRANSCRIBE_API_BASE": stub.baseURL, "MEETING_TRANSCRIBE_TEST_KEY": "test-key",
+        "MEETING_TRANSCRIBE_TEST_BACKOFF_SCALE": "0",
+    ]
+    for (k, v) in extra { e[k] = v.isEmpty ? nil : v }
+    return e
+}
+
+struct Launched {
+    let proc: Process
+    let outFile: URL
+    func wait() -> (rc: Int32, out: String) {
+        proc.waitUntilExit()
+        return (proc.terminationStatus, (try? String(contentsOf: outFile, encoding: .utf8)) ?? "")
+    }
+}
+func launch(_ args: [String], home: URL, env: [String: String] = [:], exe: String = transcribeBin) -> Launched {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: exe)
+    p.arguments = args
+    p.environment = toolEnv(home: home, env)
+    // stdin is NEVER a terminal here, whoever runs the check, so a TTY-gated path is
+    // exercised the way an agent's shell would exercise it.
+    p.standardInput = FileHandle(forReadingAtPath: "/dev/null")
+    let out = scratchRoot.appendingPathComponent("out-\(UUID().uuidString).log")
+    fm.createFile(atPath: out.path, contents: nil)
+    let h = try! FileHandle(forWritingTo: out)
+    p.standardOutput = h; p.standardError = h
+    try! p.run()
+    return Launched(proc: p, outFile: out)
+}
+func run(_ args: [String], home: URL, env: [String: String] = [:]) -> (rc: Int32, out: String) {
+    launch(args, home: home, env: env).wait()
+}
+
+func waitFor(_ seconds: Double, _ cond: () -> Bool) -> Bool {
+    let end = Date().addingTimeInterval(seconds)
+    while Date() < end { if cond() { return true }; Thread.sleep(forTimeInterval: 0.05) }
+    return cond()
+}
+func exists(_ u: URL, _ name: String = "") -> Bool {
+    fm.fileExists(atPath: name.isEmpty ? u.path : u.appendingPathComponent(name).path)
+}
+func transcriptOf(_ t: Take, label: String = "weekly sync") -> String? {
+    try? String(contentsOfFile: OutputNames.transcriptPath(outputDir: t.outputDir.path, label: label, meetingID: t.id),
+                encoding: .utf8)
+}
+func attempts(_ t: Take) -> Int? {
+    guard let s = try? String(contentsOf: t.workDir.appendingPathComponent(".upload-attempts"), encoding: .utf8) else { return nil }
+    return Int(s.split(separator: " ").first ?? "")
+}
+/// A stand-in transcriber that logs each call, then runs `body`. `$1` is the manifest.
+func loggingTranscriber(_ name: String, _ body: String) -> (path: String, calls: () -> Int) {
+    let log = scratchRoot.appendingPathComponent("calls-\(name).log")
+    let p = stubTranscriber(name, "echo \"$1\" >> '\(log.path)'\n" + body)
+    return (p, { ((try? String(contentsOf: log, encoding: .utf8)) ?? "").split(separator: "\n").count })
+}
+/// Shell that writes a proof-valid transcript for the take whose manifest is `$1`.
+let writeProofShell = """
+    work="$(dirname "$1")"; id="$(basename "$work")"; out="$(dirname "$(dirname "$work")")"
+    mkdir -p "$out/.raw"
+    printf -- '---\\nmeeting_id: %s\\n---\\n1  [00:00:00] A: hi\\n' "$id" > "$out/weekly-sync_$id.md"
+    echo '{}' > "$out/.raw/weekly-sync_$id.json"
+    """
+
+// ------------------------------------------------------------------ [a] exit 0 without proof
+print("\n[a] THE WORKER DELETES ONLY ON PROOF")
+do {
+    let home = freshHome("a")
+    let out = freshOutputDir("a-nothing")
+    let t = makeTake(in: out)
+    let tr = stubTranscriber("a-exit0", "exit 0")
+    _ = run(["--drain", out.path, "--transcriber", tr], home: home)
+    check("a exit 0 with no transcript leaves .work/<id>/ intact and marks .no-transcript",
+          exists(t.workDir, "mic.wav") && exists(t.workDir, ".no-transcript"),
+          breaksIf: "the worker deletes a take on the transcriber's exit code alone")
+
+    let out2 = freshOutputDir("a-truncated")
+    let t2 = makeTake(in: out2)
+    let tr2 = stubTranscriber("a-trunc", """
+        work="$(dirname "$1")"; id="$(basename "$work")"; out="$(dirname "$(dirname "$work")")"
+        mkdir -p "$out/.raw"; printf -- '---\\nmeeting_id: %s\\n' "$id" > "$out/weekly-sync_$id.md"
+        echo '{}' > "$out/.raw/weekly-sync_$id.json"; exit 0
+        """)
+    _ = run(["--drain", out2.path, "--transcriber", tr2], home: home)
+    check("a exit 0 with a truncated transcript leaves .work/<id>/ intact",
+          exists(t2.workDir, "mic.wav"),
+          breaksIf: "the proof accepts a transcript whose frontmatter never closes")
+
+    let out3 = freshOutputDir("a-valid")
+    let t3 = makeTake(in: out3)
+    let tr3 = stubTranscriber("a-valid", writeProofShell + "\nexit 0")
+    _ = run(["--drain", out3.path, "--transcriber", tr3], home: home)
+    check("a exit 0 with a proof-valid transcript deletes the take",
+          !exists(t3.workDir),
+          breaksIf: "the worker never deletes, so audio piles up forever")
+}
+
+// ------------------------------------------------------------------ [b] per-track cache
+print("\n[b] A RETRY NEVER RE-UPLOADS A TRACK THAT ALREADY SUCCEEDED")
+do {
+    stub.reset()
+    let home = freshHome("b")
+    let out = freshOutputDir("b")
+    let t = makeTake(in: out)
+    stub.enqueue("system", [StubResponse(status: 500, body: #"{"detail":{"status":"internal_error"}}"#)])
+    let r1 = run([t.manifest.path], home: home)
+    let r2 = run([t.manifest.path], home: home)
+    check("b mic 200 then system 500, then a retry, sends zero new mic uploads",
+          r1.rc == 1 && r2.rc == 0 && stub.uploads(track: "mic") == 1 && stub.uploads(track: "system") == 2,
+          breaksIf: "a track's 200 response is not cached in .work/<id>/ and reused on retry")
+    check("b the retry completes the transcript",
+          transcriptOf(t) != nil,
+          breaksIf: "the cached track is not merged into the transcript on the retry")
+}
+
+// ------------------------------------------------------------------ [c] the status table
+print("\n[c] EVERY ROW OF THE HTTP STATUS TABLE")
+do {
+    let rows: [(String, [StubResponse], Int32, Int?)] = [
+        ("200", [StubResponse(status: 200, body: scribeJSON(track: "mic", diarize: false))], 0, 1),
+        ("401 invalid key", [StubResponse(status: 401, body: #"{"detail":{"status":"invalid_api_key"}}"#)], 5, 1),
+        ("402 payment", [StubResponse(status: 402, body: #"{"detail":{"status":"payment_required"}}"#)], 5, 1),
+        ("403 plan gate", [StubResponse(status: 403, body: #"{"detail":{"status":"forbidden"}}"#)], 5, 1),
+        ("400 quota body", [StubResponse(status: 400, body: #"{"detail":{"status":"quota_exceeded"}}"#)], 5, 1),
+        ("400 validation", [StubResponse(status: 400, body: #"{"detail":{"status":"invalid_request"}}"#)], 3, 1),
+        ("413 too large", [StubResponse(status: 413, body: "{}")], 3, 1),
+        ("422 unprocessable", [StubResponse(status: 422, body: "{}")], 3, 1),
+        ("500", [StubResponse(status: 500, body: "{}")], 1, 1),
+        ("503", [StubResponse(status: 503, body: "{}")], 1, 1),
+        ("429 x4 backs off 3 times then exit 1",
+         Array(repeating: StubResponse(status: 429, body: #"{"detail":{"status":"system_busy"}}"#), count: 4), 1, 4),
+        ("429 then 200 recovers inside the run",
+         [StubResponse(status: 429, body: "{}"), StubResponse(status: 200, body: scribeJSON(track: "mic", diarize: false))], 0, 2),
+        ("a response slower than the timeout", [StubResponse(status: 200, body: "{}", delay: 4)], 1, nil),
+    ]
+    for (i, row) in rows.enumerated() {
+        stub.reset()
+        let home = freshHome("c\(i)")
+        let out = freshOutputDir("c\(i)")
+        let t = makeTake(in: out, source: "mic", system: nil)
+        stub.enqueue("mic", row.1)
+        let r = run([t.manifest.path], home: home, env: ["MEETING_TRANSCRIBE_TEST_TIMEOUT_SECONDS": "1"])
+        let uploadsOK = row.3.map { stub.uploads(track: "mic") == $0 } ?? true
+        check("c row \(row.0) -> exit \(row.2)", r.rc == row.2 && uploadsOK && exists(t.workDir, "mic.wav"),
+              breaksIf: "the status table maps this row to a different exit (got \(r.rc), \(stub.uploads(track: "mic")) uploads)")
+    }
+}
+
+print("\n[c] HOW THE WORKER TREATS EACH EXIT")
+do {
+    let home = freshHome("cw")
+    // exit 5: pause, reason, no attempt, next take not touched
+    let out = freshOutputDir("cw-5")
+    let older = makeTake(in: out, id: "2026-01-02T03-04-05Z-0001")
+    Thread.sleep(forTimeInterval: 1.1)
+    let newer = makeTake(in: out, id: "2026-01-02T03-04-06Z-0002")
+    let five = loggingTranscriber("cw5", "echo 'reason: key rejected' >&2\nexit 5")
+    _ = run(["--drain", out.path, "--transcriber", five.path], home: home)
+    let pause = OutputLayout(root: out.path).pauseFile
+    let reason = (try? String(contentsOfFile: pause, encoding: .utf8)) ?? ""
+    check("c drain: exit 5 pauses the drain with the reason and burns no attempt",
+          five.calls() == 1 && reason.contains("key rejected") && attempts(older) == nil
+            && exists(older.workDir, "mic.wav") && exists(newer.workDir, "mic.wav"),
+          breaksIf: "an account-wide stop is counted as a per-take failure, or the drain carries on")
+    _ = run(["--drain", out.path, "--transcriber", five.path], home: home)
+    check("c drain: a paused drain runs nothing", five.calls() == 1,
+          breaksIf: "the pause file is not checked before each item")
+
+    // exit 1: one attempt, then cooldown
+    let out1 = freshOutputDir("cw-1")
+    let t1 = makeTake(in: out1)
+    let one = loggingTranscriber("cw1", "exit 1")
+    _ = run(["--drain", out1.path, "--transcriber", one.path], home: home)
+    _ = run(["--drain", out1.path, "--transcriber", one.path], home: home)
+    check("c drain: exit 1 keeps the take, counts one attempt and cools down",
+          one.calls() == 1 && attempts(t1) == 1 && exists(t1.workDir, "mic.wav"),
+          breaksIf: "a failed take is retried with no cooldown, burning its attempts in seconds")
+
+    // the cap
+    let outCap = freshOutputDir("cw-cap")
+    let tCap = makeTake(in: outCap)
+    let capT = loggingTranscriber("cwcap", "exit 1")
+    _ = run(["--drain", outCap.path, "--transcriber", capT.path], home: home,
+            env: ["MEETING_TRANSCRIBE_TEST_COOLDOWN_SECONDS": "0"])
+    check("c drain: three failed attempts write .upload-failed and keep the audio",
+          capT.calls() == 3 && exists(tCap.workDir, ".upload-failed") && exists(tCap.workDir, "mic.wav"),
+          breaksIf: "the attempt cap is not enforced")
+
+    for (code, marker) in [(3, ".refused"), (4, ".silent-capture")] {
+        let o = freshOutputDir("cw-\(code)")
+        let t = makeTake(in: o)
+        let tr = loggingTranscriber("cw\(code)", "exit \(code)")
+        _ = run(["--drain", o.path, "--transcriber", tr.path], home: home, env: ["MEETING_TRANSCRIBE_TEST_COOLDOWN_SECONDS": "0"])
+        _ = run(["--drain", o.path, "--transcriber", tr.path], home: home, env: ["MEETING_TRANSCRIBE_TEST_COOLDOWN_SECONDS": "0"])
+        check("c drain: exit \(code) writes \(marker), keeps the audio and is not retried",
+              tr.calls() == 1 && exists(t.workDir, marker) && exists(t.workDir, "mic.wav"),
+              breaksIf: "exit \(code) is treated as retryable")
+    }
+
+    let o6 = freshOutputDir("cw-6")
+    let t6 = makeTake(in: o6)
+    let six = loggingTranscriber("cw6", "exit 6")
+    let r6 = run(["--drain", o6.path, "--transcriber", six.path], home: home, env: ["MEETING_TRANSCRIBE_TEST_COOLDOWN_SECONDS": "0"])
+    check("c drain: exit 6 (held elsewhere) burns no attempt and keeps the take",
+          r6.rc == 0 && six.calls() == 1 && attempts(t6) == nil && exists(t6.workDir, "mic.wav"),
+          breaksIf: "a take another runner holds is counted as a failure")
+
+    for (name, body) in [("exit 2", "exit 2"), ("a signal death", "kill -SEGV $$")] {
+        let o = freshOutputDir("cw-unlisted")
+        let t = makeTake(in: o)
+        let tr = loggingTranscriber("cw-\(name.count)", body)
+        _ = run(["--drain", o.path, "--transcriber", tr.path], home: home)
+        check("c drain: an unlisted exit (\(name)) counts as an attempt and keeps the audio",
+              attempts(t) == 1 && exists(t.workDir, "mic.wav"),
+              breaksIf: "an unlisted exit is ignored or deletes the take")
+    }
+
+    let oBlock = freshOutputDir("cw-noblock")
+    let bad = makeTake(in: oBlock, id: "2026-01-02T03-04-05Z-0bad")
+    Thread.sleep(forTimeInterval: 1.1)
+    let good = makeTake(in: oBlock, id: "2026-01-02T03-04-06Z-00ok")
+    let mixed = stubTranscriber("cw-mixed", "case \"$1\" in *0bad*) exit 1;; esac\n" + writeProofShell + "\nexit 0")
+    _ = run(["--drain", oBlock.path, "--transcriber", mixed], home: home)
+    check("c drain: one failing take does not block the next",
+          exists(bad.workDir, "mic.wav") && !exists(good.workDir),
+          breaksIf: "the drain stops at the first failing take")
+}
+
+// ------------------------------------------------------------------ [d] two runners
+print("\n[d] TWO RUNNERS ON ONE TAKE UPLOAD IT ONCE")
+do {
+    stub.reset()
+    let home = freshHome("d")
+    let out = freshOutputDir("d")
+    let t = makeTake(in: out)
+    stub.enqueue("mic", [StubResponse(status: 200, body: scribeJSON(track: "mic", diarize: false), delay: 1.5)])
+    let a = launch(["--drain", out.path], home: home)
+    let b = launch(["--drain", out.path], home: home)
+    let ra = a.wait(), rb = b.wait()
+    let codes = [ra.rc, rb.rc].sorted()
+    check("d two --drain runs started together upload the take once in total, and the loser exits 6",
+          stub.uploads(track: "mic") == 1 && stub.uploads(track: "system") == 1 && codes == [0, 6],
+          breaksIf: "the drain lock or the take claim lets both runners upload (codes \(codes), mic uploads \(stub.uploads(track: "mic")))")
+    check("d the winner leaves a transcript and removes the take",
+          transcriptOf(t) != nil && !exists(t.workDir),
+          breaksIf: "the winning runner does not finish the take")
+
+    // The synchronous capture path against a drain already holding the take.
+    stub.reset()
+    let out2 = freshOutputDir("d-sync")
+    let t2 = makeTake(in: out2)
+    stub.enqueue("mic", [StubResponse(status: 200, body: scribeJSON(track: "mic", diarize: false), delay: 2)])
+    let drain = launch(["--drain", out2.path], home: home)
+    let claimed = waitFor(5) { exists(t2.workDir, ".claim") }
+    for (k, v) in toolEnv(home: home, [:]) { setenv(k, v, 1) }
+    let syncRC = claimed ? runTranscriberHandoff(workDir: t2.workDir.path, manifestPath: t2.manifest.path,
+                                                  transcriber: transcribeBin, outputDir: out2.path,
+                                                  keepAudio: false, foreground: true) : -1
+    let keptDuringDrain = exists(t2.workDir, "mic.wav")
+    _ = drain.wait()
+    check("d the capture CLI's own transcriber run on a claimed take exits 6 and keeps the audio",
+          claimed && syncRC == 6 && keptDuringDrain,
+          breaksIf: "the synchronous path does not see the claim, or deletes on a take someone else holds")
+    check("d ...and the drain still finishes that take with exactly one upload per track",
+          stub.uploads(track: "mic") == 1 && stub.uploads(track: "system") == 1 && transcriptOf(t2) != nil && !exists(t2.workDir),
+          breaksIf: "the two runners both upload, or the holder is disturbed")
+}
+
+// ------------------------------------------------------------------ [e] diarization choice
+print("\n[e] DIARIZATION FOLLOWS THE MANIFEST")
+do {
+    stub.reset()
+    let home = freshHome("e")
+    let t = makeTake(in: freshOutputDir("e"), schema: 1)
+    _ = run([t.manifest.path], home: home)
+    let sys = stub.uploads.first { $0.track == "system" }
+    let mic = stub.uploads.first { $0.track == "mic" }
+    check("e a manifest with no expected_speakers diarizes the remote track",
+          sys?.fields["diarize"] == "true" && mic?.fields["diarize"] == "false",
+          breaksIf: "an absent head count is read as one speaker")
+
+    stub.reset()
+    let t1 = makeTake(in: freshOutputDir("e1"), expectedSpeakers: 1)
+    _ = run([t1.manifest.path], home: home)
+    check("e1 one remote speaker is not diarized",
+          stub.uploads.first { $0.track == "system" }?.fields["diarize"] == "false",
+          breaksIf: "a one-voice remote track is diarized, which can only invent speakers")
+
+    stub.reset()
+    let tm = makeTake(in: freshOutputDir("e2"), source: "mic-multi", expectedSpeakers: 3, system: nil)
+    _ = run([tm.manifest.path], home: home)
+    let m = stub.uploads.first { $0.track == "mic" }
+    check("e2 mic-multi diarizes the room mic, pinned to expected_speakers",
+          m?.fields["diarize"] == "true" && m?.fields["num_speakers"] == "3",
+          breaksIf: "the room mic is sent as one speaker")
+}
+
+// ------------------------------------------------------------------ [f] consent
+print("\n[f] NO CONSENT, NO UPLOAD")
+do {
+    for (name, fixture) in [("no consent file", ConsentFixture.none), ("a consent to another disclosure", .mismatch)] {
+        stub.reset()
+        let home = freshHome("f-\(name.count)", consent: fixture)
+        let t = makeTake(in: freshOutputDir("f"))
+        let r = run([t.manifest.path], home: home)
+        check("f \(name) means no upload (exit 5)",
+              r.rc == 5 && stub.uploads.isEmpty && exists(t.workDir, "mic.wav"),
+              breaksIf: "the transcriber uploads without a matching consent")
+    }
+    stub.reset()
+    let home = freshHome("f-drain", consent: .none)
+    let out = freshOutputDir("f-drain")
+    let t = makeTake(in: out)
+    _ = run(["--drain", out.path], home: home)
+    let pause = (try? String(contentsOfFile: OutputLayout(root: out.path).pauseFile, encoding: .utf8)) ?? ""
+    check("f the drain pauses on missing consent, uploads nothing, burns no attempt",
+          stub.uploads.isEmpty && pause.contains("consent") && attempts(t) == nil,
+          breaksIf: "missing consent is treated as a per-take failure")
+}
+
+// ------------------------------------------------------------------ [g3] frozen holder
+print("\n[g3] A FROZEN HOLDER RESUMES INTO A LOST CLAIM")
+do {
+    stub.reset()
+    let home = freshHome("g3")
+    let t = makeTake(in: freshOutputDir("g3"))
+    let hold = scratchRoot.appendingPathComponent("g3-hold").path
+    let timing = ["MEETING_TRANSCRIBE_TEST_STALE_SECONDS": "2", "MEETING_TRANSCRIBE_TEST_HEARTBEAT_SECONDS": "0.5"]
+    var envA = timing; envA["MEETING_TRANSCRIBE_TEST_HOLD_AFTER_CLAIM"] = hold
+    let a = launch([t.manifest.path], home: home, env: envA)
+    let claimed = waitFor(10) { fm.fileExists(atPath: hold + ".claimed") }
+    var rb: (rc: Int32, out: String) = (-1, "")
+    var ra: (rc: Int32, out: String) = (-1, "")
+    var afterB: String?
+    if claimed {
+        kill(a.proc.processIdentifier, SIGSTOP)
+        fm.createFile(atPath: hold + ".go", contents: nil)
+        Thread.sleep(forTimeInterval: 3)   // past the 2 s stale age, heartbeat frozen
+        rb = run([t.manifest.path], home: home, env: timing)
+        afterB = transcriptOf(t)
+        kill(a.proc.processIdentifier, SIGCONT)
+        ra = a.wait()
+    } else {
+        a.proc.terminate(); _ = a.wait()
+    }
+    check("g3 a holder stopped past the stale age loses its claim: one upload per track, it exits 6 and writes nothing",
+          claimed && rb.rc == 0 && ra.rc == 6 && stub.uploads(track: "mic") == 1 && stub.uploads(track: "system") == 1
+            && afterB != nil && transcriptOf(t) == afterB,
+          breaksIf: "the resumed holder does not re-check its token before uploading and writing (claimed \(claimed), A \(ra.rc), B \(rb.rc), mic uploads \(stub.uploads(track: "mic")))")
+}
+
+// ------------------------------------------------------------------ [h] [i] refusals
+print("\n[h] [i] TAKES THAT CAN NEVER SUCCEED")
+do {
+    stub.reset()
+    let home = freshHome("h")
+    let t = makeTake(in: freshOutputDir("h"), mic: Data("RIFFjunk".utf8))
+    let r = run([t.manifest.path], home: home)
+    check("h an unreadable WAV gives exit 3 and .unreadable, uploads nothing, keeps the audio",
+          r.rc == 3 && exists(t.workDir, ".unreadable") && exists(t.workDir, "mic.wav") && stub.uploads.isEmpty,
+          breaksIf: "an unreadable WAV is treated as non-silent and uploaded, or as silent and skipped")
+
+    stub.reset()
+    let t3 = makeTake(in: freshOutputDir("i"), schema: 3)
+    let r3 = run([t3.manifest.path], home: home)
+    check("i manifest schema 3 gives exit 3 and no upload",
+          r3.rc == 3 && stub.uploads.isEmpty,
+          breaksIf: "the transcriber reads a manifest schema it does not know")
+}
+
+// ------------------------------------------------------------------ [j] consent needs a person
+print("\n[j] CONSENT CANNOT BE GIVEN FROM A NON-INTERACTIVE SHELL")
+do {
+    let home = freshHome("j", consent: .none)
+    let r = run(["--consent-upload"], home: home)
+    check("j --consent-upload with stdin not a TTY exits 2 and writes no file",
+          r.rc == 2 && !fm.fileExists(atPath: home.path + "/.config/meeting-capture/consent"),
+          breaksIf: "an agent's shell can record consent on the human's behalf")
+}
+
+// ------------------------------------------------------------------ override refusal
+print("\n[override] THE TEST BASE URL IS LOOPBACK ONLY")
+do {
+    stub.reset()
+    let home = freshHome("override")
+    let t = makeTake(in: freshOutputDir("override"))
+    // 0.0.0.0 is NOT on the loopback list, yet a connection to it stays on this machine
+    // and lands on the stub. So a missing refusal shows up as a counted upload, and no
+    // run of this case can ever send a packet off the machine.
+    let r = run([t.manifest.path], home: home, env: ["MEETING_TRANSCRIBE_API_BASE": "http://0.0.0.0:\(stub.port)"])
+    check("override: a non-loopback API base is refused with exit 2 and nothing is sent",
+          r.rc == 2 && stub.uploads.isEmpty,
+          breaksIf: "the base-URL override accepts any host, which would send the key wherever it points")
+}
+
+
 stub.stop()
 // Only removed on a finished run. A crash leaves it behind for a look.
 try? fm.removeItem(at: scratchRoot)
