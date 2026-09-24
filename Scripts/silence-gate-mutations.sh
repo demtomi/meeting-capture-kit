@@ -258,19 +258,13 @@ mutate_swift() {
         bad "$label — the suite still EXITED 0 under mutation"
         return
     fi
-    # A build error fails for every mutation equally and says nothing about the limb, so
-    # it is separated from a real red rather than scored as one.
-    if contains_re 'error: |Compiling for macOS.*error' "$out"; then
-        bad "$label — the mutation did not BUILD; it tested nothing"
-        return
-    fi
-    # silence-gate-check prints "  FAIL  <label>" — TWO spaces. grep -F, so the
-    # parentheses and colons in the limb names are literal.
-    if contains "FAIL  $expect" "$out"; then
-        ok "$label -> \"$expect\" bit"
-    else
-        bad "$label — expected \"$expect\" to fail; suite failed on: $(first_lines '  FAIL  ' "$out")"
-    fi
+    # The NAMED FAIL first, then an anchored build error (lib-mutations.sh). silence-gate-check
+    # prints "  FAIL  <label>", TWO spaces; matched as a fixed string.
+    case "$(classify_output "FAIL  $expect" "$out")" in
+        bit)    ok "$label -> \"$expect\" bit" ;;
+        broken) bad "$label — the mutation did not BUILD; it tested nothing" ;;
+        *)      bad "$label — expected \"$expect\" to fail; suite failed on: $(first_lines '  FAIL  ' "$out")" ;;
+    esac
 }
 
 # --- The remote gate. Two ways to lose the "never live" condition, and they are
