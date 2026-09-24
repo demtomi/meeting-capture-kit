@@ -87,6 +87,11 @@ public func runTranscriberHandoff(workDir: String, manifestPath: String, transcr
             }
         } else if let proof {
             err("[meeting-capture] the transcriber exited 0 but \(proof), so the audio is kept in \(workDir)\n")
+        } else if status == 0 && keepAudio && proveTake(manifestPath: manifestPath, outputDir: outputDir) == nil {
+            // Kept on purpose, and proven done: mark it, so the queue worker never transcribes
+            // it again. Its terminal-marker scan skips a take carrying .transcribed.
+            FileManager.default.createFile(atPath: workDir + "/" + Marker.transcribed,
+                                           contents: Data("done by the capture CLI, audio kept by keep-audio\n".utf8))
         }
         return status
     } catch {

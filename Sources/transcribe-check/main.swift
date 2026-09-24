@@ -817,6 +817,20 @@ do {
     check("keep: the capture CLI's delete honours keep_audio in the manifest too",
           exists(t2.workDir, "mic.wav"),
           breaksIf: "the synchronous deleter ignores the take's own keep decision")
+
+    // A synchronous run that keeps the audio after a proven transcript must mark the take
+    // done, or the worker transcribes it again (a second notification, and a second bill for
+    // a transcriber with no cache).
+    let out3 = freshOutputDir("keep-sync-marker")
+    let t3 = makeTake(in: out3)
+    _ = runTranscriberHandoff(workDir: t3.workDir.path, manifestPath: t3.manifest.path, transcriber: proofWriter,
+                              outputDir: out3.path, keepAudio: true, foreground: true)
+    let again = loggingTranscriber("keep-sync-again", "exit 0")
+    _ = run(["--drain", out3.path, "--transcriber", again.path], home: home)
+    let st = run(["--status", out3.path], home: home).out
+    check("keep: a kept take the capture CLI already transcribed is marked done and never re-run",
+          exists(t3.workDir, ".transcribed") && again.calls() == 0 && st.contains("\(t3.id)  done (audio kept)"),
+          breaksIf: "the worker re-transcribes a take the synchronous path finished (calls \(again.calls()))")
 }
 
 print("\n[del] A DELETER HOLDS THE CLAIM, AND A VANISHED TAKE IS SKIPPED")

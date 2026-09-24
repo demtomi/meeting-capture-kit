@@ -308,6 +308,9 @@ limb "the stalled-send watchdog never fires" "$CLIENT" \
 limb "the watchdog also fires during processing" "$CLIENT" \
     's/        guard !didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }/        guard !didStall, Date().timeIntervalSince(lastProgress) > limit else { return false }/' \
     "c a slow answer after the whole body is sent is waited for, not called a stall"
+limb "a kept, proven take is left unmarked" "$HANDOFF" \
+    's/        } else if status == 0 \&\& keepAudio \&\& proveTake(manifestPath: manifestPath, outputDir: outputDir) == nil {/        } else if false {/' \
+    "keep: a kept take the capture CLI already transcribed is marked done and never re-run"
 
 echo
 echo "======================================================="
