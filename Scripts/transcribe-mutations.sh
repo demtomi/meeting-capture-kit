@@ -138,7 +138,7 @@ limb "the proof ignores meeting_id" "$PROOF" \
     's/    guard fields\["meeting_id"\] == meetingID else/    guard fields["meeting_id"] != nil else/' \
     "proof: a transcript naming another meeting fails"
 limb "keep-audio is not consulted by the worker" "$WORKER" \
-    's/                } else if keepAudio {/                } else if false {/' \
+    's/                } else if keepAudio || manifestKeepsAudio(dir) {/                } else if manifestKeepsAudio(dir) {/' \
     "w keep-audio: transcript written, audio kept, marked done, not uploaded twice"
 
 # ======================================================================== paying once
