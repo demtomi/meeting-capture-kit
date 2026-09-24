@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# Falsification for the transcriber, the queue worker and the capture CLI's delete rule.
+#
+# `transcribe-check` passes. A check that passes is evidence about nothing until a defect
+# makes it fail, so each limb below plants one defect in the source and asserts that the
+# NAMED case goes red, not merely that the run failed, which a compile error would also do.
+#
+# Three controls run first, because each is a way for this script to report bites that
+# never happened:
+#   1. the unmutated tree must pass, or every "bite" below is the baseline failing
+#   2. a sed that changes nothing must be caught, or a stale pattern reads as coverage
+#   3. a mutation that does not compile must be reported as testing nothing
+#
+# Sources are mutated IN PLACE and restored by an EXIT trap. Every build goes into its own
+# --scratch-path, so the caller's .build is left alone. Nothing here needs a device, a
+# grant, a key, a credit or the network: the check's only socket is on 127.0.0.1.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+cd "$HERE/.."
+PASS=1
+
+CORE="Sources/NotetakerCore"
+HANDOFF="$CORE/Handoff.swift"
+WORKER="$CORE/Worker.swift"
+TRANSCRIBE="$CORE/Transcribe.swift"
+CLIENT="$CORE/ScribeClient.swift"
+CLAIM="$CORE/TakeClaim.swift"
+CONSENT="$CORE/Consent.swift"
+KEYS="$CORE/KeySource.swift"
+WAV="$CORE/WavPeak.swift"
+MANIFEST="$CORE/Manifest.swift"
+PROOF="$CORE/TakeProof.swift"
+RENDER="$CORE/Renderer.swift"
+INSTALL="$CORE/Install.swift"
+MAIN="Sources/meeting-transcribe/main.swift"
+FILES=("$HANDOFF" "$WORKER" "$TRANSCRIBE" "$CLIENT" "$CLAIM" "$CONSENT" "$KEYS" "$WAV"
+       "$MANIFEST" "$PROOF" "$RENDER" "$INSTALL" "$MAIN")
+
+BACKUP="$(mktemp -d)"
+for f in "${FILES[@]}"; do
+    [ -f "$f" ] || { echo "   FAIL missing source: $f"; exit 1; }
+    mkdir -p "$BACKUP/$(dirname "$f")"; cp "$f" "$BACKUP/$f"
+done
+restore() {
+    for f in "${FILES[@]}"; do [ -f "$BACKUP/$f" ] && cp "$BACKUP/$f" "$f"; done
+    rm -rf "$BACKUP"
+}
+trap restore EXIT INT TERM
+
+ok()  { echo "   ok   $1"; }
+bad() { echo "   FAIL $1"; PASS=0; }
+
+# Builds only the two products the check needs, into a fresh scratch path, and runs it.
+# Sets OUT and RC. RC 97 means the build failed.
+build_and_check() {
+    local scratch; scratch="$(mktemp -d)"
+    if ! swift build --scratch-path "$scratch" --product meeting-transcribe > "$scratch.build.log" 2>&1 \
+       || ! swift build --scratch-path "$scratch" --product transcribe-check >> "$scratch.build.log" 2>&1; then
+        OUT="$(cat "$scratch.build.log")"; RC=97
+    else
+        OUT="$("$scratch/debug/transcribe-check" 2>&1)"; RC=$?
+    fi
+    rm -rf "$scratch" "$scratch.build.log"
+}
+
+# Applies one mutation, runs the check, restores, and classifies. Returns:
+#   0 the named case went red        1 the sed changed nothing
+#   2 build error (tested nothing)   3 the run exited 0 or went red elsewhere
+mutate() {
+    local file="$1" expr="$2" expect="$3"
+    local before; before="$(mktemp)"; cp "$file" "$before"
+    sed -i '' "$expr" "$file"
+    if cmp -s "$before" "$file"; then cp "$before" "$file"; rm -f "$before"; return 1; fi
+    build_and_check
+    cp "$before" "$file"; rm -f "$before"
+    # The NAMED case first. A build log can quote source containing the word error, so a
+    # real red must never be reclassified as a build failure by testing that first.
+    if [ "$RC" -ne 0 ] && [ "$RC" -ne 97 ] && printf '%s' "$OUT" | grep -qF "FAIL  $expect"; then return 0; fi
+    if [ "$RC" -eq 97 ]; then return 2; fi
+    return 3
+}
+
+limb() {
+    local label="$1" file="$2" expr="$3" expect="$4"
+    mutate "$file" "$expr" "$expect"
+    case $? in
+        0) ok "$label -> \"$expect\" bit" ;;
+        1) bad "$label: the sed changed NOTHING, so this limb tested nothing" ;;
+        2) bad "$label: the mutation did not build, so it tested nothing" ;;
+        *) bad "$label: \"$expect\" did not go red (exit $RC; red: $(printf '%s' "$OUT" | grep '  FAIL  ' | head -3 | tr '\n' ';'))" ;;
+    esac
+}
+
+# ======================================================================== controls
+echo "== controls"
+build_and_check
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qE '=== ([0-9]+)/\1 checks passed ==='; then
+    ok "baseline: transcribe-check passes on the unmutated tree ($(printf '%s' "$OUT" | grep -E '^=== ' | tail -1))"
+else
+    bad "baseline: transcribe-check does NOT pass unmutated (exit $RC). Every result below would mean nothing."
+fi
+
+mutate "$HANDOFF" 's/THIS PATTERN MATCHES NOTHING IN THE FILE/x/' "g2 a transcriber that exits 0 and writes nothing"
+[ $? -eq 1 ] && ok "control: a sed that changes nothing is caught" || bad "control: a no-op sed was NOT caught"
+
+mutate "$HANDOFF" 's/^public func efficiencyCoreCount() -> Int {$/public func efficiencyCoreCount() -> Int { let broken: Int = "not an int"/' "g2 a transcriber that exits 0 and writes nothing"
+[ $? -eq 2 ] && ok "control: a mutation that does not compile is reported as testing nothing" \
+             || bad "control: a compile error was NOT classified as testing nothing"
+
+# ======================================================================== the delete rule
+echo
+echo "== deletion only on proof"
+limb "the capture CLI deletes on exit 0 alone" "$HANDOFF" \
+    's/        if status == 0 \&\& !keepAudio \&\& proofPasses {/        if status == 0 \&\& !keepAudio {/' \
+    "g2 a transcriber that exits 0 and writes nothing leaves .work/<id>/ intact"
+limb "the worker deletes on exit 0 alone" "$WORKER" \
+    's/                if let failure = proveTake(manifestPath: dir + "\/manifest.json", outputDir: layout.root) {/                if let failure = Optional<ProofFailure>.none {/' \
+    "a exit 0 with no transcript leaves .work/<id>/ intact and marks .no-transcript"
+limb "the proof ignores meeting_id" "$PROOF" \
+    's/    guard fields\["meeting_id"\] == meetingID else/    guard fields["meeting_id"] != nil else/' \
+    "proof: a transcript naming another meeting fails"
+limb "keep-audio is not consulted by the worker" "$WORKER" \
+    's/                } else if keepAudio {/                } else if false {/' \
+    "w keep-audio: transcript written, audio kept, marked done, not uploaded twice"
+
+# ======================================================================== paying once
+echo
+echo "== paying once"
+limb "a cached track is not reused" "$TRANSCRIBE" \
+    's/            if let b = body, ScribeResult.parse(b) != nil {/            if let b = body, ScribeResult.parse(b) != nil, b.isEmpty {/' \
+    "b mic 200 then system 500, then a retry, sends zero new mic uploads"
+limb "the losing drain reports success" "$WORKER" \
+    's/            return ExitCode.heldElsewhere/            return ExitCode.ok/' \
+    "d two --drain runs started together upload the take once in total, and the loser exits 6"
+limb "a take held elsewhere reads as done to the capture CLI" "$TRANSCRIBE" \
+    's/            return ExitCode.heldElsewhere/            return ExitCode.ok/' \
+    "d the capture CLI's own transcriber run on a claimed take exits 6 and keeps the audio"
+limb "the token is never re-checked" "$CLAIM" \
+    's/        return s.split(separator: " ").dropFirst().first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } == token/        return !s.isEmpty/' \
+    "g3 a holder stopped past the stale age loses its claim: it exits 6, uploads nothing, writes nothing"
+limb "a stale claim can never be taken over" "$CLAIM" \
+    's/            guard age > stale else {/            guard age > stale * 1000 else {/' \
+    "g3 ...and the runner that took over finishes with exactly one upload per track"
+
+# ======================================================================== the status table
+echo
+echo "== the status table"
+limb "403 is not account-wide" "$CLIENT" \
+    's/\[401, 402, 403\].contains(status)/[401, 402].contains(status)/' \
+    "c row 403 plan gate -> exit 5"
+limb "a quota body is not account-wide" "$CLIENT" \
+    's/    static let accountBodies = \["quota_exceeded", /    static let accountBodies = [/' \
+    "c row 400 quota body -> exit 5"
+limb "413 is retried" "$CLIENT" \
+    's/\[400, 413, 422\].contains(status)/[400, 422].contains(status)/' \
+    "c row 413 too large -> exit 3"
+limb "429 is not backed off" "$CLIENT" \
+    's/            if status == 429, retries < Self.backoff.count {/            if status == 429, retries < 0 {/' \
+    "c row 429 x4 backs off 3 times then exit 1 -> exit 1"
+limb "the resource timeout is a fixed value" "$CLIENT" \
+    's/    public static func resourceTimeout(audioSeconds: Double) -> Double { 900 + 0.5 \* audioSeconds }/    public static func resourceTimeout(audioSeconds: Double) -> Double { 60 }/' \
+    "c timeouts: 300 s idle, and 900 s plus half the audio in total"
+
+# ======================================================================== the worker
+echo
+echo "== the worker"
+limb "exit 5 does not pause" "$WORKER" \
+    's/                guard write(layout.pauseFile, why) else { return stopOnMarker(id) }/                guard write(layout.pauseFile + ".not", why) else { return stopOnMarker(id) }/' \
+    "c drain: exit 5 pauses the drain with the reason and burns no attempt"
+limb "no cooldown" "$WORKER" \
+    's/                return !(a.count > 0 \&\& now - a.last < cooldown)/                return true/' \
+    "c drain: exit 1 keeps the take, counts one attempt and cools down"
+limb "no attempt cap" "$WORKER" \
+    's/                if count >= Self.maxAttempts {/                if count >= 99 {/' \
+    "c drain: three failed attempts write .upload-failed and keep the audio"
+limb "exit 6 is counted as a failure" "$WORKER" \
+    's/            case ExitCode.heldElsewhere:/            case 99:/' \
+    "c drain: exit 6 (held elsewhere) burns no attempt and keeps the take"
+limb "a signal death reads as exit 0" "$WORKER" \
+    's/        return (signalled ? 128 + p.terminationStatus : p.terminationStatus, reason, signalled)/        return (signalled ? 0 : p.terminationStatus, reason, signalled)/' \
+    "c drain: an unlisted exit (a signal death) counts as an attempt and keeps the audio"
+limb "no length ceiling" "$TRANSCRIBE" \
+    's/        if let longest = durations.values.max(), longest > ceiling {/        if let longest = durations.values.max(), longest > ceiling * 1e9 {/' \
+    "w a take longer than the ceiling exits 3 before any upload"
+
+# ======================================================================== what gets sent
+echo
+echo "== what gets sent"
+limb "an absent head count means one speaker" "$TRANSCRIBE" \
+    's/            if m.expectedSpeakers == 1 { return (false, nil) }/            if m.expectedSpeakers ?? 1 == 1 { return (false, nil) }/' \
+    "e a manifest with no expected_speakers diarizes the remote track"
+limb "one remote speaker is diarized" "$TRANSCRIBE" \
+    's/            if m.expectedSpeakers == 1 { return (false, nil) }/            if m.expectedSpeakers == 2 { return (false, nil) }/' \
+    "e1 one remote speaker is not diarized"
+limb "an unreadable WAV is treated as loud" "$WAV" \
+    's/        let i = try info(path: path)/        guard let i = try? info(path: path) else { return 1.0 }/' \
+    "h an unreadable WAV gives exit 3 and .unreadable, uploads nothing, keeps the audio"
+limb "the silence threshold moves" "$WAV" \
+    's/    public static let silenceThreshold = 5e-4/    public static let silenceThreshold = 5e-3/' \
+    "silent: a track just above the threshold is not silent, one just below is"
+limb "schema 3 is accepted" "$MANIFEST" \
+    's/    public static let supportedSchemas: Set<Int> = \[1, 2\]/    public static let supportedSchemas: Set<Int> = [1, 2, 3]/' \
+    "i manifest schema 3 gives exit 3 and no upload"
+limb "the turn gap is ignored" "$RENDER" \
+    's/    public static let turnGap = 1.2/    public static let turnGap = 100.0/' \
+    "r line format: <n>, two spaces, [HH:MM:SS], speaker, colon, text"
+
+# ======================================================================== consent and the key
+echo
+echo "== consent and the key"
+limb "consent is not checked" "$TRANSCRIBE" \
+    's/        switch Consent.state() {/        switch Consent.State.valid {/' \
+    "f no consent file means no upload (exit 5)"
+limb "a consent to any disclosure counts" "$CONSENT" \
+    's/        guard let r = read(path), r.disclosure_sha256 == disclosureHash, r.version == version else { return .stale }/        guard let r = read(path), r.version == version else { return .stale }/' \
+    "f a consent to another disclosure means no upload (exit 5)"
+limb "consent does not need a terminal" "$MAIN" \
+    's/    guard KeySource.stdinIsTerminal else {/    guard true else {/' \
+    "j --consent-upload with stdin not a TTY exits 2 and writes no file"
+limb "install does not need consent" "$MAIN" \
+    's/    guard Consent.state() == .valid else {/    guard true else {/' \
+    "install: without consent it is a dry run that writes nothing and exits 5"
+limb "the plist carries an environment block" "$INSTALL" \
+    's/            "ProcessType": "Background",/            "ProcessType": "Background", "EnvironmentVariables": ["X": "y"],/' \
+    "install: the plist carries no EnvironmentVariables and no key"
+limb "the env key is used without a terminal" "$KEYS" \
+    's/        if interactive, let k = environment\["ELEVENLABS_API_KEY"\], !k.isEmpty {/        if let k = environment["ELEVENLABS_API_KEY"], !k.isEmpty {/' \
+    "k ELEVENLABS_API_KEY is ignored when stdin is not a terminal"
+limb "the API base override accepts any host" "$CLIENT" \
+    's/        guard loopbackHosts.contains(h.lowercased()) else {/        guard !h.isEmpty else {/' \
+    "override: a non-loopback API base is refused with exit 2 and nothing is sent"
+
+echo
+echo "======================================================="
+[ "$PASS" = 1 ] && echo "  TRANSCRIBE FALSIFICATION: PASS" || echo "  TRANSCRIBE FALSIFICATION: FAIL"
+echo "======================================================="
+[ "$PASS" = 1 ]

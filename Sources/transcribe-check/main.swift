@@ -541,6 +541,11 @@ do {
     }
 }
 
+check("c timeouts: 300 s idle, and 900 s plus half the audio in total",
+      ScribeClient.idleTimeout == 300 && ScribeClient.resourceTimeout(audioSeconds: 3600) == 2700
+        && ScribeClient.backoff == [30, 60, 120],
+      breaksIf: "the timeouts fall back to a fixed value, so a slow answer about a long take is uploaded and billed again")
+
 print("\n[c] HOW THE WORKER TREATS EACH EXIT")
 do {
     let home = freshHome("cw")
@@ -780,32 +785,45 @@ do {
 // ------------------------------------------------------------------ [g3] frozen holder
 print("\n[g3] A FROZEN HOLDER RESUMES INTO A LOST CLAIM")
 do {
+    // A claims, is frozen, and goes stale. B takes the claim over and is held right after
+    // claiming, so the claim file carries B's token when A wakes. That is the moment the
+    // token exists for: A must see a claim file that is not its own and stop. (If B were
+    // allowed to finish first, the claim file would be gone and A would stop for a
+    // different reason, which proves nothing about the token.)
     stub.reset()
     let home = freshHome("g3")
     let t = makeTake(in: freshOutputDir("g3"))
-    let hold = scratchRoot.appendingPathComponent("g3-hold").path
+    let holdA = scratchRoot.appendingPathComponent("g3-hold-a").path
+    let holdB = scratchRoot.appendingPathComponent("g3-hold-b").path
     let timing = ["MEETING_TRANSCRIBE_TEST_STALE_SECONDS": "2", "MEETING_TRANSCRIBE_TEST_HEARTBEAT_SECONDS": "0.5"]
-    var envA = timing; envA["MEETING_TRANSCRIBE_TEST_HOLD_AFTER_CLAIM"] = hold
+    var envA = timing; envA["MEETING_TRANSCRIBE_TEST_HOLD_AFTER_CLAIM"] = holdA
+    var envB = timing; envB["MEETING_TRANSCRIBE_TEST_HOLD_AFTER_CLAIM"] = holdB
     let a = launch([t.manifest.path], home: home, env: envA)
-    let claimed = waitFor(10) { fm.fileExists(atPath: hold + ".claimed") }
-    var rb: (rc: Int32, out: String) = (-1, "")
+    let claimedA = waitFor(10) { fm.fileExists(atPath: holdA + ".claimed") }
     var ra: (rc: Int32, out: String) = (-1, "")
-    var afterB: String?
-    if claimed {
+    var rb: (rc: Int32, out: String) = (-1, "")
+    var claimedB = false, uploadsWhileAWoke = -1, transcriptBeforeB = true
+    if claimedA {
         kill(a.proc.processIdentifier, SIGSTOP)
-        fm.createFile(atPath: hold + ".go", contents: nil)
-        Thread.sleep(forTimeInterval: 3)   // past the 2 s stale age, heartbeat frozen
-        rb = run([t.manifest.path], home: home, env: timing)
-        afterB = transcriptOf(t)
+        fm.createFile(atPath: holdA + ".go", contents: nil)
+        Thread.sleep(forTimeInterval: 3)   // past the 2 s stale age, A's heartbeat frozen
+        let b = launch([t.manifest.path], home: home, env: envB)
+        claimedB = waitFor(10) { fm.fileExists(atPath: holdB + ".claimed") }
         kill(a.proc.processIdentifier, SIGCONT)
-        ra = a.wait()
+        ra = a.wait()                        // A runs to its end while B still holds the claim
+        uploadsWhileAWoke = stub.uploads.count
+        transcriptBeforeB = transcriptOf(t) != nil
+        fm.createFile(atPath: holdB + ".go", contents: nil)
+        rb = b.wait()
     } else {
         a.proc.terminate(); _ = a.wait()
     }
-    check("g3 a holder stopped past the stale age loses its claim: one upload per track, it exits 6 and writes nothing",
-          claimed && rb.rc == 0 && ra.rc == 6 && stub.uploads(track: "mic") == 1 && stub.uploads(track: "system") == 1
-            && afterB != nil && transcriptOf(t) == afterB,
-          breaksIf: "the resumed holder does not re-check its token before uploading and writing (claimed \(claimed), A \(ra.rc), B \(rb.rc), mic uploads \(stub.uploads(track: "mic")))")
+    check("g3 a holder stopped past the stale age loses its claim: it exits 6, uploads nothing, writes nothing",
+          claimedA && claimedB && ra.rc == 6 && uploadsWhileAWoke == 0 && !transcriptBeforeB,
+          breaksIf: "the resumed holder does not compare its token before uploading (A \(ra.rc), uploads while A ran \(uploadsWhileAWoke))")
+    check("g3 ...and the runner that took over finishes with exactly one upload per track",
+          rb.rc == 0 && stub.uploads(track: "mic") == 1 && stub.uploads(track: "system") == 1 && transcriptOf(t) != nil,
+          breaksIf: "a stale claim cannot be taken over, so a frozen holder blocks the take forever")
 }
 
 // ------------------------------------------------------------------ [h] [i] refusals
