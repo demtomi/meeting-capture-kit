@@ -1136,6 +1136,15 @@ do {
     check("install: the label has no personal or company identity in it",
           LaunchAgent.label == "io.github.meeting-capture.transcribe-worker",
           breaksIf: "the label changes")
+    // bootout returns before launchd has torn the job down, so a bootstrap right after it
+    // can fail. The installer waits until the job is really gone.
+    var polls = 0
+    let gone = LaunchAgent.waitUntilUnloaded(isLoaded: { polls += 1; return polls < 4 }, timeout: 10, poll: 0.2, sleep: { _ in })
+    var pollsForever = 0
+    let never = LaunchAgent.waitUntilUnloaded(isLoaded: { pollsForever += 1; return true }, timeout: 1, poll: 0.2, sleep: { _ in })
+    check("install: after bootout it waits until the job is gone, and gives up after its timeout",
+          gone && polls == 4 && !never && pollsForever == 5,
+          breaksIf: "bootstrap follows bootout at once and fails on a job still tearing down (polls \(polls), \(pollsForever))")
     let un = run(["--uninstall-worker"], home: home, env: noLaunch)
     check("uninstall: removes the plist, keeps consent unless asked, and says so",
           un.rc == 0 && !fm.fileExists(atPath: plistPath) && fm.fileExists(atPath: home.path + "/.config/meeting-capture/consent")

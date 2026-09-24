@@ -287,6 +287,9 @@ limb "the worker deletes without the claim" "$WORKER" \
 limb "a vanished take aborts the drain" "$WORKER" \
     's/    func takeGone(_ dir: String) -> Bool { !fm.fileExists(atPath: dir) }/    func takeGone(_ dir: String) -> Bool { false }/' \
     "del: a take whose dir vanished mid-drain is skipped and the drain carries on"
+limb "the installer does not wait for bootout" "$INSTALL" \
+    's/            if !isLoaded() { return true }/            return true/' \
+    "install: after bootout it waits until the job is gone, and gives up after its timeout"
 
 echo
 echo "======================================================="

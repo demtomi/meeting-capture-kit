@@ -96,6 +96,7 @@ public final class Doctor {
         }
         let uid = String(getuid())
         LaunchAgent.launchctl(["bootout", "gui/\(uid)/\(label)"])
+        _ = LaunchAgent.waitUntilUnloaded(isLoaded: { LaunchAgent.isLoaded(label) })
         let (rc, out) = LaunchAgent.launchctl(["bootstrap", "gui/\(uid)", plist])
         defer { LaunchAgent.launchctl(["bootout", "gui/\(uid)/\(label)"]) }
         guard rc == 0 else { add(.fail, "key from launchd: probe did not load (\(out.trimmingCharacters(in: .whitespacesAndNewlines)))"); return }
