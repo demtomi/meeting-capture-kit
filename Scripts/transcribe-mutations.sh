@@ -263,6 +263,15 @@ limb "the idle timeout is a fixed 300 s" "$CLIENT" \
 limb "every manifest is stamped schema 2" "$CAPMAN" \
     's/            "schema": needsSchema2 ? 2 : 1,/            "schema": 2,/' \
     "capture-manifest: a take with no schema-2 field is written as schema 1"
+limb "the worker ignores the take's keep_audio" "$WORKER" \
+    's/                } else if keepAudio || manifestKeepsAudio(dir) {/                } else if keepAudio {/' \
+    "keep: a take recorded with --keep-audio keeps its audio through the worker"
+limb "the capture CLI ignores the take's keep_audio" "$HANDOFF" \
+    's/        let keepAudio = keepAudio || ((try? Manifest.load(path: manifestPath))?.keepAudio ?? false)/        let keepAudio = keepAudio/' \
+    "keep: the capture CLI's delete honours keep_audio in the manifest too"
+limb "--keep-audio is not written into the take" "$CAPMAN" \
+    's/        if keepAudio { m\["keep_audio"\] = true }/        if false { m["keep_audio"] = true }/' \
+    "capture-manifest: --keep-audio is written into the take as keep_audio, as schema 2"
 
 echo
 echo "======================================================="

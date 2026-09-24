@@ -81,7 +81,7 @@ struct Take {
 /// A completed take on disk: WAVs first, manifest last, as the capture CLI writes it.
 @discardableResult
 func makeTake(in out: URL, id: String = "2026-01-02T03-04-05Z-ab12", label: String = "weekly sync",
-              source: String = "mic+system", schema: Int = 2, expectedSpeakers: Int? = nil,
+              source: String = "mic+system", schema: Int = 2, expectedSpeakers: Int? = nil, keepAudio: Bool? = nil,
               mic: Data? = wavData(seconds: 1, amplitude: 8000),
               system: Data? = wavData(seconds: 1, amplitude: 8000)) -> Take {
     let t = Take(outputDir: out, id: id)
@@ -101,6 +101,7 @@ func makeTake(in out: URL, id: String = "2026-01-02T03-04-05Z-ab12", label: Stri
         "tracks": tracks, "output_dir": out.path,
     ]
     if let expectedSpeakers { m["expected_speakers"] = expectedSpeakers }
+    if let keepAudio { m["keep_audio"] = keepAudio }
     let d = try! JSONSerialization.data(withJSONObject: m, options: [.sortedKeys])
     try! d.write(to: t.manifest)
     return t
@@ -254,6 +255,12 @@ do {
     check("capture-manifest: expected_speakers on mic+system is written, as schema 2",
           schema(made("mic+system", speakers: 1)) == 2 && made("mic+system", speakers: 1)["expected_speakers"] as? Int == 1,
           breaksIf: "the remote head count is dropped, or written under a schema that does not define it")
+    let kept = CaptureManifest.make(meetingID: "2026-01-02T03-04-05Z-ab12", label: "x", source: "mic",
+                                    startedAt: "", sharedStartNs: 1, host: "A", hasSystemTrack: false,
+                                    outputDir: "/tmp/x", languageHint: nil, expectedSpeakers: nil, keepAudio: true)
+    check("capture-manifest: --keep-audio is written into the take as keep_audio, as schema 2",
+          kept["keep_audio"] as? Bool == true && schema(kept) == 2 && made("mic")["keep_audio"] == nil,
+          breaksIf: "the keep decision stays in the capture process, and the worker deletes a take the user asked to keep")
     let decoded = try? Manifest.decode(try! JSONSerialization.data(withJSONObject: made("mic+system", speakers: 1)))
     check("capture-manifest: what the capture CLI writes, the transcriber reads",
           decoded?.expectedSpeakers == 1 && decoded?.schema == 2,
@@ -750,6 +757,26 @@ do {
     check("args: --status with a valued flag still reports the configured dir",
           st.out.contains(t.id),
           breaksIf: "--status reads a flag's value as its dir")
+}
+
+print("\n[keep] THE TAKE CARRIES THE KEEP DECISION")
+do {
+    stub.reset()
+    let home = freshHome("keep-manifest")
+    let out = freshOutputDir("keep-manifest")
+    let t = makeTake(in: out, keepAudio: true)
+    _ = run(["--drain", out.path], home: home)           // the worker was NOT told --keep-audio
+    check("keep: a take recorded with --keep-audio keeps its audio through the worker",
+          transcriptOf(t) != nil && exists(t.workDir, "mic.wav") && exists(t.workDir, ".transcribed"),
+          breaksIf: "the worker learns keep-audio only from its own flags, and deletes a recording the user asked to keep")
+    let out2 = freshOutputDir("keep-manifest-handoff")
+    let t2 = makeTake(in: out2, keepAudio: true)
+    let proofWriter = stubTranscriber("keep-proof", writeProofShell + "\nexit 0")
+    _ = runTranscriberHandoff(workDir: t2.workDir.path, manifestPath: t2.manifest.path, transcriber: proofWriter,
+                              outputDir: out2.path, keepAudio: false, foreground: true)
+    check("keep: the capture CLI's delete honours keep_audio in the manifest too",
+          exists(t2.workDir, "mic.wav"),
+          breaksIf: "the synchronous deleter ignores the take's own keep decision")
 }
 
 // ------------------------------------------------------------------ [d] two runners

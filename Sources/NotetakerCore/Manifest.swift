@@ -29,12 +29,15 @@ public struct Manifest: Equatable {
     public let tracks: [String: Track]
     public let languageHint: String?
     public let expectedSpeakers: Int?
+    /// Schema 2: the person asked to keep this take's audio. No deleter may remove it.
+    public let keepAudio: Bool
 
     public init(schema: Int, meetingID: String, label: String, source: String, startedAt: String,
-                tracks: [String: Track], languageHint: String?, expectedSpeakers: Int?) {
+                tracks: [String: Track], languageHint: String?, expectedSpeakers: Int?, keepAudio: Bool = false) {
         self.schema = schema; self.meetingID = meetingID; self.label = label; self.source = source
         self.startedAt = startedAt; self.tracks = tracks; self.languageHint = languageHint
         self.expectedSpeakers = expectedSpeakers
+        self.keepAudio = keepAudio
     }
 
     public enum LoadError: Error, Equatable, CustomStringConvertible {
@@ -96,6 +99,6 @@ public struct Manifest: Equatable {
         return Manifest(schema: schema, meetingID: id, label: (m["label"] as? String) ?? "",
                         source: source, startedAt: (m["started_at"] as? String) ?? "",
                         tracks: tracks, languageHint: m["language_hint"] as? String,
-                        expectedSpeakers: speakers)
+                        expectedSpeakers: speakers, keepAudio: (m["keep_audio"] as? Bool) ?? false)
     }
 }

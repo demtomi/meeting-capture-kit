@@ -74,6 +74,8 @@ public func runTranscriberHandoff(workDir: String, manifestPath: String, transcr
         // Exit 0 alone is not proof. A transcriber that exits 0 and wrote nothing, or
         // wrote it somewhere else, keeps the audio, and so does every non-zero exit.
         // `--keep-audio`, or MEETING_CAPTURE_KEEP_AUDIO in the environment, opts out.
+        // The take's own manifest can also say keep, whoever launched this.
+        let keepAudio = keepAudio || ((try? Manifest.load(path: manifestPath))?.keepAudio ?? false)
         let proof: ProofFailure? = (status == 0 && !keepAudio)
             ? proveTake(manifestPath: manifestPath, outputDir: outputDir) : nil
         let proofPasses = proof == nil

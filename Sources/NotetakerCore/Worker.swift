@@ -65,6 +65,11 @@ public final class Worker {
             .sorted()
     }
 
+    /// The take's own keep decision, written by the capture CLI from --keep-audio.
+    func manifestKeepsAudio(_ dir: String) -> Bool {
+        (try? Manifest.load(path: dir + "/manifest.json"))?.keepAudio ?? false
+    }
+
     func label(_ dir: String) -> String {
         let l = (try? Manifest.load(path: dir + "/manifest.json"))?.label ?? ""
         return l.isEmpty ? "meeting" : l
@@ -168,7 +173,7 @@ public final class Worker {
                     guard write(dir + "/" + Marker.noTranscript, "exit 0 but \(failure)") else { return stopOnMarker(id) }
                     log("NO TRANSCRIPT \(id): the transcriber exited 0 but \(failure). Audio kept.")
                     notify("No transcript for \(label(dir)). Audio kept. See: meeting-transcribe --status")
-                } else if keepAudio {
+                } else if keepAudio || manifestKeepsAudio(dir) {
                     guard write(dir + "/" + Marker.transcribed, "done, audio kept by keep-audio") else { return stopOnMarker(id) }
                     try? fm.removeItem(atPath: dir + "/" + Marker.attempts)
                     log("done \(id), audio kept")

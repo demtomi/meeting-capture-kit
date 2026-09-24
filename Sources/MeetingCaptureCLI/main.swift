@@ -462,7 +462,7 @@ if capturedFrames == 0 {
 let manifest = CaptureManifest.make(
     meetingID: meetingID, label: label, source: source, startedAt: startedAt,
     sharedStartNs: sharedStartNs, host: host, hasSystemTrack: wantSystem, outputDir: outputDir,
-    languageHint: langHint, expectedSpeakers: expectedSpeakers)
+    languageHint: langHint, expectedSpeakers: expectedSpeakers, keepAudio: keepAudio)
 
 let manifestPath = "\(workDir)/manifest.json"
 let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
