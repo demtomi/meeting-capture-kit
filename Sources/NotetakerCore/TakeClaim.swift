@@ -43,7 +43,6 @@ public final class TakeClaim {
         acquire(path: takeDir + "/" + fileName, stale: stale, log: log)
     }
 
-    /// The same protocol on any path. The queue worker uses it for its drain lock.
     /// Is the process that wrote this claim gone? Only ESRCH counts: EPERM means it exists.
     static func holderIsDead(_ content: String) -> Bool {
         guard let pid = content.split(separator: " ").first.flatMap({ Int32($0) }), pid > 0 else { return false }
@@ -53,6 +52,7 @@ public final class TakeClaim {
     /// A takeover lock older than this is itself stale. A takeover takes milliseconds.
     static let takeoverLockStaleSeconds: Double = 60
 
+    /// The same protocol on any path. The queue worker uses it for its drain lock.
     /// `beforeReplace` is a test seam: it runs at the moment this taker is about to replace
     /// a stale claim, so a check can put a second taker exactly there.
     public static func acquire(path: String, stale: Double = staleSeconds, log: (String) -> Void,
