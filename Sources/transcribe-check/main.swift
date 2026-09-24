@@ -758,6 +758,27 @@ do {
           breaksIf: "the transcriber reads a manifest schema it does not know")
 }
 
+print("\n[silent] EVERY TRACK SILENT")
+do {
+    stub.reset()
+    let home = freshHome("silent")
+    let t = makeTake(in: freshOutputDir("silent"), mic: wavData(seconds: 1, amplitude: 0), system: wavData(seconds: 1, amplitude: 0))
+    let r = run([t.manifest.path], home: home)
+    check("silent: every track digitally silent gives exit 4, no transcript, no upload, audio kept",
+          r.rc == 4 && transcriptOf(t) == nil && stub.uploads.isEmpty && exists(t.workDir, "mic.wav"),
+          breaksIf: "digital silence is uploaded, or rendered as an empty transcript that reads as a finished take")
+
+    stub.reset()
+    let t1 = makeTake(in: freshOutputDir("silent-one"), system: wavData(seconds: 1, amplitude: 0))
+    _ = run([t1.manifest.path], home: home)
+    check("silent: a silent system track is not uploaded and the mic still is",
+          stub.uploads(track: "system") == 0 && stub.uploads(track: "mic") == 1,
+          breaksIf: "the peak threshold is not applied per track")
+    check("silent: a track just above the threshold is not silent, one just below is",
+          !WavPeak.isSilent(6e-4) && WavPeak.isSilent(4e-4) && WavPeak.silenceThreshold == 5e-4,
+          breaksIf: "the silence threshold moves off 5e-4 of full scale")
+}
+
 // ------------------------------------------------------------------ [j] consent needs a person
 print("\n[j] CONSENT CANNOT BE GIVEN FROM A NON-INTERACTIVE SHELL")
 do {

@@ -1,4 +1,4 @@
-// NAIVE STAGE (build step 5). Deliberately wrong: no claim, no cache, no consent, no
+// NAIVE STAGE for --drain and --consent-upload (build step 5); the take path is real from step 7. Deliberately wrong: no claim, no cache, no consent, no
 // status table, no proof before delete. It exists so the worker cases are watched to
 // fail against something before the real client is written. Replaced in later steps.
 import Foundation
@@ -55,14 +55,5 @@ if args.contains("--consent-upload") {
     exit(0)
 }
 
-guard args.count == 2 else { err("usage: meeting-transcribe <manifest.json>"); exit(2) }
-let manifestPath = args[1]
-let takeDir = (manifestPath as NSString).deletingLastPathComponent
-guard let d = FileManager.default.contents(atPath: manifestPath),
-      let m = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any],
-      let tracks = m["tracks"] as? [String: Any] else { exit(1) }
-for name in ["mic", "system"] where tracks[name] != nil {
-    let s = upload(takeDir + "/" + name + ".wav", diarize: name == "system")
-    if s != 200 { exit(1) }
-}
-exit(0)
+guard args.count == 2, !args[1].hasPrefix("-") else { err("usage: meeting-transcribe <manifest.json>"); exit(2) }
+exit(TakeTranscriber(manifestPath: args[1], env: .fromProcess()).run())
