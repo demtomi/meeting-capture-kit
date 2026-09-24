@@ -65,12 +65,18 @@ public func runTranscriberHandoff(workDir: String, manifestPath: String, transcr
         try proc.run()
         proc.waitUntilExit()
         let status = proc.terminationStatus
-        // Data minimisation: once the transcriber has succeeded, the raw capture audio
+        // Data minimisation: once a transcript is PROVEN on disk, the raw capture audio
         // is no longer needed, so the workdir (both WAVs plus the manifest) is deleted.
-        // On failure it is kept so the step can be retried against the same audio.
+        // Exit 0 alone is not proof. A transcriber that exits 0 and wrote nothing, or
+        // wrote it somewhere else, keeps the audio, and so does every non-zero exit.
         // `--keep-audio`, or MEETING_CAPTURE_KEEP_AUDIO in the environment, opts out.
-        if status == 0 && !keepAudio {
+        let proof: ProofFailure? = (status == 0 && !keepAudio)
+            ? proveTake(manifestPath: manifestPath, outputDir: outputDir) : nil
+        let proofPasses = proof == nil
+        if status == 0 && !keepAudio && proofPasses {
             try? FileManager.default.removeItem(atPath: workDir)
+        } else if let proof {
+            err("[meeting-capture] the transcriber exited 0 but \(proof), so the audio is kept in \(workDir)\n")
         }
         return status
     } catch {

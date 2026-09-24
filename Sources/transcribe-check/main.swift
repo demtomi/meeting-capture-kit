@@ -150,6 +150,74 @@ do {
     check("g2 a transcriber that exits 0 and writes nothing leaves .work/<id>/ intact",
           rc == 0 && fm.fileExists(atPath: t.workDir.appendingPathComponent("mic.wav").path),
           breaksIf: "the capture CLI deletes the take on exit 0 without re-reading a transcript")
+
+    // The positive control. Without it, "never delete anything" passes g2.
+    let out2 = freshOutputDir("g2-positive")
+    let t2 = makeTake(in: out2)
+    let md = OutputNames.transcriptPath(outputDir: out2.path, label: "weekly sync", meetingID: t2.id)
+    let raw = OutputNames.rawPath(outputDir: out2.path, label: "weekly sync", meetingID: t2.id)
+    let writesProof = stubTranscriber("writes-proof", """
+        mkdir -p '\(out2.path)/.raw'
+        printf -- '---\\nmeeting_id: \(t2.id)\\n---\\n1  [00:00:00] A: hi\\n' > '\(md)'
+        echo '{}' > '\(raw)'
+        exit 0
+        """)
+    let rc2 = runTranscriberHandoff(workDir: t2.workDir.path, manifestPath: t2.manifest.path,
+                                    transcriber: writesProof, outputDir: out2.path,
+                                    keepAudio: false, foreground: true)
+    check("g2 a transcriber that exits 0 with a proof-valid transcript gets its take deleted",
+          rc2 == 0 && !fm.fileExists(atPath: t2.workDir.path),
+          breaksIf: "the proof gate refuses a valid transcript, so no take is ever cleaned up")
+
+    let out3 = freshOutputDir("g2-keep")
+    let t3 = makeTake(in: out3)
+    let writesProof3 = stubTranscriber("writes-proof-3", """
+        mkdir -p '\(out3.path)/.raw'
+        printf -- '---\\nmeeting_id: \(t3.id)\\n---\\n' > '\(OutputNames.transcriptPath(outputDir: out3.path, label: "weekly sync", meetingID: t3.id))'
+        echo '{}' > '\(OutputNames.rawPath(outputDir: out3.path, label: "weekly sync", meetingID: t3.id))'
+        exit 0
+        """)
+    _ = runTranscriberHandoff(workDir: t3.workDir.path, manifestPath: t3.manifest.path,
+                              transcriber: writesProof3, outputDir: out3.path,
+                              keepAudio: true, foreground: true)
+    check("g2 keep-audio keeps the take even when the proof passes",
+          fm.fileExists(atPath: t3.workDir.appendingPathComponent("mic.wav").path),
+          breaksIf: "keep-audio stops being consulted before the delete")
+}
+
+// ------------------------------------------------------------------ [proof] the rule itself
+print("\n[proof] THE SHARED PROOF FUNCTION")
+do {
+    let out = freshOutputDir("proof")
+    let id = "2026-01-02T03-04-05Z-cd34"
+    let label = "a/b ../c"
+    let md = OutputNames.transcriptPath(outputDir: out.path, label: label, meetingID: id)
+    let raw = OutputNames.rawPath(outputDir: out.path, label: label, meetingID: id)
+    try! fm.createDirectory(atPath: out.path + "/.raw", withIntermediateDirectories: true)
+    func proof() -> ProofFailure? { proveTranscript(outputDir: out.path, label: label, meetingID: id) }
+
+    check("proof: a missing transcript fails", proof() == .missingTranscript,
+          breaksIf: "the proof stops checking that the transcript exists")
+    try! Data().write(to: URL(fileURLWithPath: md))
+    check("proof: an empty transcript fails", proof() == .emptyTranscript,
+          breaksIf: "the proof accepts a zero-byte transcript, which is what a crash mid-write leaves")
+    try! "no frontmatter here\n1  [00:00:00] A: hi\n".write(toFile: md, atomically: true, encoding: .utf8)
+    check("proof: a transcript without frontmatter fails", proof() == .badFrontmatter,
+          breaksIf: "the proof stops parsing the frontmatter")
+    try! "---\nmeeting_id: 2026-01-02T03-04-05Z-ffff\n---\n".write(toFile: md, atomically: true, encoding: .utf8)
+    check("proof: a transcript naming another meeting fails",
+          proof() == .wrongMeetingID("2026-01-02T03-04-05Z-ffff"),
+          breaksIf: "the proof stops comparing meeting_id")
+    try! "---\ntitle: \"x\"\nmeeting_id: \"\(id)\"\nparticipants:\n  - \"A (host, mic)\"\n---\n".write(toFile: md, atomically: true, encoding: .utf8)
+    check("proof: a valid transcript without its raw file fails", proof() == .missingRaw,
+          breaksIf: "the proof stops checking .raw/")
+    try! "{}".write(toFile: raw, atomically: true, encoding: .utf8)
+    check("proof: a valid transcript plus its raw file passes", proof() == nil,
+          breaksIf: "the proof refuses a complete take")
+    check("proof: the slug cannot climb out of the output dir",
+          (md as NSString).deletingLastPathComponent == out.path && !OutputNames.slug(label).contains("/")
+            && !OutputNames.slug("..").hasPrefix("."),
+          breaksIf: "the slug keeps a path separator or a leading dot")
 }
 
 stub.stop()
