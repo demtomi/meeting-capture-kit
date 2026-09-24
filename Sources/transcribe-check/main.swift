@@ -219,6 +219,23 @@ do {
           breaksIf: "track paths are used without checking they are plain file names")
 }
 
+print("\n[g2] A RELATIVE OUTPUT DIR")
+do {
+    // The capture CLI accepts --output-dir as typed. Relative, it used to be resolved twice:
+    // once as the child's cwd and again inside the manifest path handed to the child.
+    let base = freshOutputDir("relative")
+    let saved = fm.currentDirectoryPath
+    fm.changeCurrentDirectoryPath(base.path)
+    let t = makeTake(in: base.appendingPathComponent("rel"))
+    let seesManifest = stubTranscriber("sees-manifest", "[ -f \"$1\" ] && exit 0\nexit 7")
+    let rc = runTranscriberHandoff(workDir: "rel/.work/\(t.id)", manifestPath: "rel/.work/\(t.id)/manifest.json",
+                                   transcriber: seesManifest, outputDir: "rel", keepAudio: false, foreground: true)
+    fm.changeCurrentDirectoryPath(saved)
+    check("g2 a relative output dir still hands the transcriber a manifest path that exists",
+          rc == 0,
+          breaksIf: "relative paths are resolved against the child's cwd a second time (got exit \(rc))")
+}
+
 // ------------------------------------------------------------------ [proof] the rule itself
 print("\n[proof] THE SHARED PROOF FUNCTION")
 do {

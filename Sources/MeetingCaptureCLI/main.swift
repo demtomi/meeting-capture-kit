@@ -165,7 +165,9 @@ let keepAudio = hasFlag("--keep-audio")
 // argument. Absent, the run stops once the audio and manifest are on disk.
 let micDeviceHint = argVal("--mic-device")
 let transcriber = argVal("--transcriber").map { $0.expandingTildeInPath }
-let outputDir = (argVal("--output-dir") ?? "~/Documents/MeetingCaptures").expandingTildeInPath
+// Absolute, so the work dir, the manifest path and the transcriber's cwd all agree.
+let outputDir = URL(fileURLWithPath: (argVal("--output-dir") ?? "~/Documents/MeetingCaptures").expandingTildeInPath)
+    .standardizedFileURL.path
 
 guard source == "mic+system" || source == "mic" || source == "mic-multi" else {
     FileHandle.standardError.write("--source must be 'mic+system', 'mic', or 'mic-multi'\n".data(using: .utf8)!)

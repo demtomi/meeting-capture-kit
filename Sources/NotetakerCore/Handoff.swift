@@ -25,6 +25,10 @@ private func err(_ s: String) {
 /// path, and reports its exit status as its own.
 public func runTranscriberHandoff(workDir: String, manifestPath: String, transcriber: String,
                                   outputDir: String, keepAudio: Bool, foreground: Bool) -> Int32 {
+    // Absolute before anything else. The child runs with outputDir as its cwd, so a relative
+    // manifest path would be resolved a second time from inside it and never be found.
+    func absolute(_ p: String) -> String { URL(fileURLWithPath: p).standardizedFileURL.path }
+    let workDir = absolute(workDir), manifestPath = absolute(manifestPath), outputDir = absolute(outputDir)
     guard FileManager.default.isExecutableFile(atPath: transcriber) else {
         err("--transcriber is not an executable file: \(transcriber)\n")
         return 1

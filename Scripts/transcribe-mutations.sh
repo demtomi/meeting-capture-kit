@@ -253,6 +253,9 @@ echo "== review fixes"
 limb "a valued flag's argument is read as the output dir" "$MAIN" \
     's/        if valuedFlags.contains(a) { j += 2; continue }/        if false { j += 2; continue }/' \
     "args: --drain --transcriber <path> drains the configured dir, not <path>/.work"
+limb "relative paths are resolved twice" "$HANDOFF" \
+    's/    let workDir = absolute(workDir), manifestPath = absolute(manifestPath), outputDir = absolute(outputDir)/    let workDir = workDir, manifestPath = manifestPath, outputDir = outputDir/' \
+    "g2 a relative output dir still hands the transcriber a manifest path that exists"
 
 echo
 echo "======================================================="
