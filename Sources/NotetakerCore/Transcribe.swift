@@ -92,49 +92,157 @@ public final class TakeTranscriber {
             return ExitCode.allSilent
         }
 
-        // NAIVE UPLOAD, replaced in step 8.
-        for track in live {
-            let s = naiveUpload(takeDir + "/" + m.tracks[track]!.path, diarize: track == "system")
-            if s != 200 { return 1 }
+        // Where to send it, and with what key.
+        let (base, refusal) = APIBase.resolve(override: env.apiBaseOverride)
+        guard let base else {
+            reason(refusal ?? "bad API base")
+            return ExitCode.badArguments
         }
+        guard let key = env.key(loopback: base.isLoopback) else {
+            reason("no key. Add it with: security add-generic-password -s meeting-capture-elevenlabs -a \"$USER\" -w")
+            return ExitCode.accountStop
+        }
+        let knobs = base.isLoopback ? env.testKnobs : TestKnobs()
+
+        let durations = Dictionary(uniqueKeysWithValues: (live + silent).map { t in
+            (t, (try? WavPeak.info(path: takeDir + "/" + m.tracks[t]!.path).durationSeconds) ?? 0)
+        })
+        let client = ScribeClient(
+            base: base.url, key: key,
+            sleep: { s in Thread.sleep(forTimeInterval: s * knobs.backoffScale) },
+            timeoutOverride: knobs.timeoutSeconds,
+            onAttempt: { r, result in
+                self.log(String(format: "[transcribe] upload take=%@ track=%@ audio_seconds=%.1f result=%@",
+                                m.meetingID, r.track, r.audioSeconds, result))
+            })
+
+        // Per track: a cached 200 is reused, never uploaded again.
+        var results: [String: ScribeResult] = [:]
+        var rawObjects: [String: Any] = [:]
+        var diarized: [String: Bool] = [:]
+        for track in live {
+            let (diarize, pin) = diarization(m, track: track)
+            diarized[track] = diarize
+            let cache = takeDir + "/scribe-\(track).json"
+            var body = FileManager.default.contents(atPath: cache)
+            if let b = body, ScribeResult.parse(b) != nil {
+                log("[transcribe] \(track): reusing the cached response, no upload")
+            } else {
+                body = nil
+                let req = ScribeRequest(file: takeDir + "/" + m.tracks[track]!.path, track: track,
+                                        diarize: diarize, numSpeakers: pin, languageCode: m.languageHint,
+                                        audioSeconds: durations[track] ?? 0)
+                let outcome = client.transcribe(req, scratchDir: takeDir)
+                guard case .ok(let data) = outcome else {
+                    switch outcome {
+                    case .transient(let s), .neverSucceeds(let s), .accountStop(let s): reason("\(track): \(s)")
+                    case .ok: break
+                    }
+                    return outcome.exitCode
+                }
+                guard ScribeResult.parse(data) != nil else {
+                    reason("\(track): a 200 whose body is not a transcript")
+                    return ExitCode.transient
+                }
+                // Cached the moment it arrives, temp then rename.
+                do { try writeAtomically(data, to: cache) } catch {
+                    reason("cannot write the \(track) cache: \(error)")
+                    return ExitCode.transient
+                }
+                body = data
+            }
+            results[track] = ScribeResult.parse(body!)!
+            rawObjects[track] = try? JSONSerialization.jsonObject(with: body!)
+        }
+
+        // Outputs, only once every track is cached. Raw first, transcript last, both temp then
+        // rename, so a transcript on disk always has its raw file beside it.
+        let input = RenderInput(manifest: m, results: results, diarized: diarized, silentTracks: silent,
+                                durationSeconds: durations.values.max() ?? 0)
+        for p in Renderer.phantomSpeakers(input) {
+            log(String(format: "[transcribe] phantom-speaker warning: %@ holds %d word(s) (%.2f%%). Likely an artifact. Set --speakers at capture to pin the count.",
+                       p.label, p.words, p.share * 100))
+        }
+        rawObjects["_meta"] = ["silent_tracks": silent, "diarized": diarized, "schema": Renderer.schema]
+        let rawPath = OutputNames.rawPath(outputDir: outputDir, label: m.label, meetingID: m.meetingID)
+        let mdPath = OutputNames.transcriptPath(outputDir: outputDir, label: m.label, meetingID: m.meetingID)
+        do {
+            try FileManager.default.createDirectory(atPath: (rawPath as NSString).deletingLastPathComponent,
+                                                    withIntermediateDirectories: true)
+            try writeAtomically(try JSONSerialization.data(withJSONObject: rawObjects, options: [.sortedKeys]), to: rawPath)
+            try writeAtomically(Data(Renderer.render(input).utf8), to: mdPath)
+        } catch {
+            reason("cannot write the transcript: \(error)")
+            return ExitCode.transient
+        }
+        log("[transcribe] wrote \(mdPath)")
         return ExitCode.ok
     }
 
-    func naiveUpload(_ file: String, diarize: Bool) -> Int {
-        var req = URLRequest(url: URL(string: env.apiBase + "/v1/speech-to-text")!)
-        req.httpMethod = "POST"
-        req.setValue(env.testKey ?? "", forHTTPHeaderField: "xi-api-key")
-        let b = "naive"
-        req.setValue("multipart/form-data; boundary=\(b)", forHTTPHeaderField: "Content-Type")
-        var body = Data("--\(b)\r\nContent-Disposition: form-data; name=\"model_id\"\r\n\r\nscribe_v2\r\n".utf8)
-        body += Data("--\(b)\r\nContent-Disposition: form-data; name=\"diarize\"\r\n\r\n\(diarize)\r\n".utf8)
-        body += Data("--\(b)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\((file as NSString).lastPathComponent)\"\r\n\r\n".utf8)
-        body += (FileManager.default.contents(atPath: file) ?? Data())
-        body += Data("\r\n--\(b)--\r\n".utf8)
-        req.httpBody = body
-        let done = DispatchSemaphore(value: 0)
-        var status = -1
-        URLSession.shared.dataTask(with: req) { _, r, _ in
-            status = (r as? HTTPURLResponse)?.statusCode ?? -1; done.signal()
-        }.resume()
-        done.wait()
-        return status
+    /// (diarize, pinned speaker count) for one track, from the manifest.
+    func diarization(_ m: Manifest, track: String) -> (Bool, Int?) {
+        switch (m.source, track) {
+        case ("mic-multi", "mic"): return (true, m.expectedSpeakers)
+        case ("mic+system", "system"):
+            // One remote voice: diarizing it can only invent speakers.
+            if m.expectedSpeakers == 1 { return (false, nil) }
+            return (true, m.expectedSpeakers)
+        default: return (false, nil)
+        }
     }
+}
+
+/// Temp file in the same directory, then rename. A reader sees the old file or the whole
+/// new one, never half of it.
+public func writeAtomically(_ data: Data, to path: String) throws {
+    let tmp = (path as NSString).deletingLastPathComponent + "/.tmp-\(getpid())-" + (path as NSString).lastPathComponent
+    try data.write(to: URL(fileURLWithPath: tmp))
+    if rename(tmp, path) != 0 {
+        let e = errno
+        try? FileManager.default.removeItem(atPath: tmp)
+        throw NSError(domain: NSPOSIXErrorDomain, code: Int(e))
+    }
+}
+
+/// Timing knobs the checks use. Honoured ONLY when the API base is loopback, so no real
+/// run can be made to back off less, time out sooner or hold a claim.
+public struct TestKnobs {
+    public var backoffScale: Double = 1
+    public var timeoutSeconds: Double?
+    public var staleSeconds: Double?
+    public var heartbeatSeconds: Double?
+    public var cooldownSeconds: Double?
+    public var holdAfterClaim: String?
+    public init() {}
 }
 
 /// What the process was started with. Read once, in one place.
 public struct RuntimeEnv {
     public static let defaultAPIBase = "https://api.elevenlabs.io"
-    public let apiBase: String
+    public let apiBaseOverride: String?
     public let testKey: String?
+    public let testKnobs: TestKnobs
 
-    public init(apiBase: String = RuntimeEnv.defaultAPIBase, testKey: String? = nil) {
-        self.apiBase = apiBase; self.testKey = testKey
+    public init(apiBaseOverride: String? = nil, testKey: String? = nil, testKnobs: TestKnobs = TestKnobs()) {
+        self.apiBaseOverride = apiBaseOverride; self.testKey = testKey; self.testKnobs = testKnobs
+    }
+
+    /// The key. On a loopback base it is the test key and nothing else, so a check can
+    /// never read a real one. Real key sources arrive with KeySource.
+    public func key(loopback: Bool) -> String? {
+        if loopback { return testKey }
+        return nil
     }
 
     public static func fromProcess() -> RuntimeEnv {
         let e = ProcessInfo.processInfo.environment
-        return RuntimeEnv(apiBase: e["MEETING_TRANSCRIBE_API_BASE"] ?? defaultAPIBase,
-                          testKey: e["MEETING_TRANSCRIBE_TEST_KEY"])
+        var k = TestKnobs()
+        if let v = e["MEETING_TRANSCRIBE_TEST_BACKOFF_SCALE"].flatMap(Double.init) { k.backoffScale = v }
+        k.timeoutSeconds = e["MEETING_TRANSCRIBE_TEST_TIMEOUT_SECONDS"].flatMap(Double.init)
+        k.staleSeconds = e["MEETING_TRANSCRIBE_TEST_STALE_SECONDS"].flatMap(Double.init)
+        k.heartbeatSeconds = e["MEETING_TRANSCRIBE_TEST_HEARTBEAT_SECONDS"].flatMap(Double.init)
+        k.cooldownSeconds = e["MEETING_TRANSCRIBE_TEST_COOLDOWN_SECONDS"].flatMap(Double.init)
+        k.holdAfterClaim = e["MEETING_TRANSCRIBE_TEST_HOLD_AFTER_CLAIM"]
+        return RuntimeEnv(apiBaseOverride: e["MEETING_TRANSCRIBE_API_BASE"], testKey: e["MEETING_TRANSCRIBE_TEST_KEY"], testKnobs: k)
     }
 }
