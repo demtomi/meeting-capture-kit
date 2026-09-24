@@ -1,4 +1,5 @@
 .build/
+.work/
 .swiftpm/
 .DS_Store
 *.wav
