@@ -29,6 +29,8 @@ public func runTranscriberHandoff(workDir: String, manifestPath: String, transcr
     // manifest path would be resolved a second time from inside it and never be found.
     func absolute(_ p: String) -> String { URL(fileURLWithPath: p).standardizedFileURL.path }
     let workDir = absolute(workDir), manifestPath = absolute(manifestPath), outputDir = absolute(outputDir)
+    // The transcriber too: taskpolicy spawns it from inside outputDir.
+    let transcriber = absolute(transcriber)
     guard FileManager.default.isExecutableFile(atPath: transcriber) else {
         err("--transcriber is not an executable file: \(transcriber)\n")
         return 1

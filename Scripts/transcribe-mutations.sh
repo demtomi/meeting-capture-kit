@@ -290,6 +290,9 @@ limb "a vanished take aborts the drain" "$WORKER" \
 limb "the installer does not wait for bootout" "$INSTALL" \
     's/            if !isLoaded() { return true }/            return true/' \
     "install: after bootout it waits until the job is gone, and gives up after its timeout"
+limb "a relative transcriber reaches taskpolicy" "$HANDOFF" \
+    's/    let transcriber = absolute(transcriber)/    let transcriber = transcriber/' \
+    "g2 a relative transcriber path runs on the throttled path too"
 
 echo
 echo "======================================================="

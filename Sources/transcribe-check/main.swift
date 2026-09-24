@@ -235,6 +235,19 @@ do {
     check("g2 a relative output dir still hands the transcriber a manifest path that exists",
           rc == 0,
           breaksIf: "relative paths are resolved against the child's cwd a second time (got exit \(rc))")
+
+    // The THROTTLED path (foreground false): taskpolicy starts the transcriber with cwd set to
+    // the output dir, so a relative transcriber path must already be absolute by then.
+    let base2 = freshOutputDir("relative-throttled")
+    fm.changeCurrentDirectoryPath(base2.path)
+    let t2 = makeTake(in: base2.appendingPathComponent("rel"))
+    try! fm.copyItem(atPath: seesManifest, toPath: base2.path + "/tx.sh")
+    let rc2 = runTranscriberHandoff(workDir: "rel/.work/\(t2.id)", manifestPath: "rel/.work/\(t2.id)/manifest.json",
+                                    transcriber: "tx.sh", outputDir: "rel", keepAudio: false, foreground: false)
+    fm.changeCurrentDirectoryPath(saved)
+    check("g2 a relative transcriber path runs on the throttled path too",
+          rc2 == 0,
+          breaksIf: "taskpolicy resolves a relative transcriber against the output dir and cannot spawn it (got exit \(rc2))")
 }
 
 print("\n[capture-manifest] WHAT THE CAPTURE CLI WRITES")
