@@ -326,6 +326,15 @@ limb "a valued flag with no value is dropped" "$MAIN" \
 limb "install resolves its dir on its own" "$MAIN" \
     's/^    let dir = outputDir(after: "--install-worker")$/    let dir = value(after: "--output-dir") ?? config.output_dir ?? "\/nonexistent"/' \
     "args: --install-worker and --doctor resolve the dir like every other command"
+limb "a folder nobody named is used silently" "$MAIN" \
+    's/    guard let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir else { return nil }/    let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir ?? "\/tmp"/' \
+    "args: with no dir given and none configured, a worker command refuses (exit 2)"
+limb "--resume succeeds with nothing to resume" "$WORKER" \
+    's/        guard fm.fileExists(atPath: layout.pauseFile) else {/        guard true else {/' \
+    "args: --resume with no pause file says so and exits non-zero"
+limb "the resume hint omits the folder" "$WORKER" \
+    "s/    var resumeCommand: String { \"meeting-transcribe --resume '\\\\(layout.root)'\" }/    var resumeCommand: String { \"meeting-transcribe --resume\" }/" \
+    "c drain: the pause message names the folder to resume"
 
 echo
 echo "======================================================="

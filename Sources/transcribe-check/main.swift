@@ -647,7 +647,7 @@ do {
     Thread.sleep(forTimeInterval: 1.1)
     let newer = makeTake(in: out, id: "2026-01-02T03-04-06Z-0002")
     let five = loggingTranscriber("cw5", "echo 'reason: key rejected' >&2\nexit 5")
-    _ = run(["--drain", out.path, "--transcriber", five.path], home: home)
+    let d5 = run(["--drain", out.path, "--transcriber", five.path], home: home)
     let pause = OutputLayout(root: out.path).pauseFile
     let reason = (try? String(contentsOfFile: pause, encoding: .utf8)) ?? ""
     check("c drain: exit 5 pauses the drain with the reason and burns no attempt",
@@ -655,6 +655,9 @@ do {
             && exists(older.workDir, "mic.wav") && exists(newer.workDir, "mic.wav"),
           breaksIf: "an account-wide stop is counted as a per-take failure, or the drain carries on")
     _ = run(["--drain", out.path, "--transcriber", five.path], home: home)
+    check("c drain: the pause message names the folder to resume",
+          d5.out.contains("meeting-transcribe --resume '\(out.path)'"),
+          breaksIf: "the resume hint omits the dir, so it resumes the default folder instead of this one")
     check("c drain: a paused drain runs nothing", five.calls() == 1,
           breaksIf: "the pause file is not checked before each item")
 
@@ -825,6 +828,18 @@ do {
           ins.rc == 0 && WorkerConfig.load(home.path + "/.config/meeting-capture/config.json").output_dir == posDir.path
             && doc.out.contains("output dir: \(posDir.path) is writable"),
           breaksIf: "install and doctor ignore a positional dir the other commands honour (install rc \(ins.rc))")
+
+    // Nothing given and nothing configured is a refusal, never a silent default folder.
+    let bare = freshHome("args-bare")
+    let st0 = run(["--status"], home: bare)
+    check("args: with no dir given and none configured, a worker command refuses (exit 2)",
+          st0.rc == 2 && st0.out.contains("no output dir"),
+          breaksIf: "the command quietly runs against a default folder the person never chose (rc \(st0.rc))")
+    let emptyDir = freshOutputDir("args-resume-nothing")
+    let rs0 = run(["--resume", emptyDir.path], home: bare)
+    check("args: --resume with no pause file says so and exits non-zero",
+          rs0.rc != 0 && rs0.out.contains("no pause file in \(emptyDir.path)"),
+          breaksIf: "--resume reports success on a folder that was never paused, so the paused one stays paused (rc \(rs0.rc))")
 }
 
 print("\n[keep] THE TAKE CARRIES THE KEEP DECISION")

@@ -152,7 +152,7 @@ public final class Worker {
         while true {
             // Checked before EVERY item, so a pause stops a drain that is already running.
             if fm.fileExists(atPath: layout.pauseFile) {
-                log("paused (\(read(layout.pauseFile)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")). Resume with: meeting-transcribe --resume")
+                log("paused (\(read(layout.pauseFile)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "")). Resume with: \(resumeCommand)")
                 break
             }
             let now = Date().timeIntervalSince1970
@@ -197,8 +197,8 @@ public final class Worker {
                 }
             case ExitCode.accountStop:
                 guard write(layout.pauseFile, why) else { return stopOnMarker(id) }
-                log("PAUSED on \(id): \(why). No attempt used. Fix it, then: meeting-transcribe --resume")
-                notify("Transcription paused: \(why). Fix it, then run meeting-transcribe --resume")
+                log("PAUSED on \(id): \(why). No attempt used. Fix it, then: \(resumeCommand)")
+                notify("Transcription paused: \(why). Fix it, then run \(resumeCommand)")
                 return ExitCode.ok
             case ExitCode.heldElsewhere:
                 skip.insert(id)
@@ -274,7 +274,7 @@ public final class Worker {
         if fm.fileExists(atPath: layout.pauseFile) {
             let r = read(layout.pauseFile)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             lines.append("PAUSED: \(r)")
-            lines.append("  resume with: meeting-transcribe --resume \(layout.root)")
+            lines.append("  resume with: \(resumeCommand)")
         }
         let now = Date().timeIntervalSince1970
         let ids = takeIDs()
@@ -315,9 +315,17 @@ public final class Worker {
         return ExitCode.ok
     }
 
+    /// The exact command that resumes THIS folder. Without the dir it resumes whatever the
+    /// config points at, which may be a different folder from the one that is paused.
+    var resumeCommand: String { "meeting-transcribe --resume '\(layout.root)'" }
+
     public func resume() -> Int32 {
-        if fm.fileExists(atPath: layout.pauseFile) { try? fm.removeItem(atPath: layout.pauseFile) }
-        log("resumed. The next drain runs the queue.")
+        guard fm.fileExists(atPath: layout.pauseFile) else {
+            log("no pause file in \(layout.root). Nothing was paused here, so nothing was resumed.")
+            return ExitCode.transient
+        }
+        try? fm.removeItem(atPath: layout.pauseFile)
+        log("resumed \(layout.root). The next drain runs the queue.")
         return ExitCode.ok
     }
 }
