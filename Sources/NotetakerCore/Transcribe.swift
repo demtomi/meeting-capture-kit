@@ -67,6 +67,42 @@ public final class TakeTranscriber {
             return ExitCode.neverSucceeds
         }
 
+        // Where to send it, and with what key.
+        let (base, refusal) = APIBase.resolve(override: env.apiBaseOverride)
+        guard let base else {
+            reason(refusal ?? "bad API base")
+            return ExitCode.badArguments
+        }
+        guard let key = env.key(loopback: base.isLoopback) else {
+            reason("no key. Add it with: security add-generic-password -s meeting-capture-elevenlabs -a \"$USER\" -w")
+            return ExitCode.accountStop
+        }
+        let knobs = base.isLoopback ? env.testKnobs : TestKnobs()
+
+        // The claim, before anything is read for upload or written. Everything below
+        // re-checks it before an upload or a write.
+        let claim: TakeClaim
+        switch TakeClaim.acquire(takeDir: takeDir, stale: knobs.staleSeconds ?? TakeClaim.staleSeconds, log: log) {
+        case .held(let c): claim = c
+        case .heldElsewhere(let why):
+            reason("this take is held by another runner (\(why)). Nothing uploaded, audio kept.")
+            return ExitCode.heldElsewhere
+        case .failed(let why):
+            reason(why)
+            return ExitCode.transient
+        }
+        claim.startHeartbeat(every: knobs.heartbeatSeconds ?? TakeClaim.heartbeatSeconds)
+        defer { claim.release() }
+        if let hold = knobs.holdAfterClaim {
+            // Test-only pause point, so a check can freeze a holder between claim and upload.
+            FileManager.default.createFile(atPath: hold + ".claimed", contents: nil)
+            while !FileManager.default.fileExists(atPath: hold + ".go") { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        func lost() -> Int32 {
+            reason("the claim on this take was taken over while this run was stopped. Nothing written.")
+            return ExitCode.heldElsewhere
+        }
+
         // Peak scan. An unreadable track is never guessed at in either direction.
         var silent: [String] = []
         var live: [String] = []
@@ -82,6 +118,7 @@ public final class TakeTranscriber {
                     live.append(track)
                 }
             } catch {
+                guard claim.stillMine() else { return lost() }
                 _ = mark(Marker.unreadable, "\(track): \(error)")
                 reason("\(track) track unreadable: \(error). Audio kept.")
                 return ExitCode.neverSucceeds
@@ -91,18 +128,6 @@ public final class TakeTranscriber {
             reason("every captured track was digital silence (\(silent.joined(separator: ", "))). This is a capture failure, not a quiet meeting.")
             return ExitCode.allSilent
         }
-
-        // Where to send it, and with what key.
-        let (base, refusal) = APIBase.resolve(override: env.apiBaseOverride)
-        guard let base else {
-            reason(refusal ?? "bad API base")
-            return ExitCode.badArguments
-        }
-        guard let key = env.key(loopback: base.isLoopback) else {
-            reason("no key. Add it with: security add-generic-password -s meeting-capture-elevenlabs -a \"$USER\" -w")
-            return ExitCode.accountStop
-        }
-        let knobs = base.isLoopback ? env.testKnobs : TestKnobs()
 
         let durations = Dictionary(uniqueKeysWithValues: (live + silent).map { t in
             (t, (try? WavPeak.info(path: takeDir + "/" + m.tracks[t]!.path).durationSeconds) ?? 0)
@@ -132,6 +157,7 @@ public final class TakeTranscriber {
                 let req = ScribeRequest(file: takeDir + "/" + m.tracks[track]!.path, track: track,
                                         diarize: diarize, numSpeakers: pin, languageCode: m.languageHint,
                                         audioSeconds: durations[track] ?? 0)
+                guard claim.stillMine() else { return lost() }
                 let outcome = client.transcribe(req, scratchDir: takeDir)
                 guard case .ok(let data) = outcome else {
                     switch outcome {
@@ -145,6 +171,7 @@ public final class TakeTranscriber {
                     return ExitCode.transient
                 }
                 // Cached the moment it arrives, temp then rename.
+                guard claim.stillMine() else { return lost() }
                 do { try writeAtomically(data, to: cache) } catch {
                     reason("cannot write the \(track) cache: \(error)")
                     return ExitCode.transient
@@ -169,7 +196,9 @@ public final class TakeTranscriber {
         do {
             try FileManager.default.createDirectory(atPath: (rawPath as NSString).deletingLastPathComponent,
                                                     withIntermediateDirectories: true)
+            guard claim.stillMine() else { return lost() }
             try writeAtomically(try JSONSerialization.data(withJSONObject: rawObjects, options: [.sortedKeys]), to: rawPath)
+            guard claim.stillMine() else { return lost() }
             try writeAtomically(Data(Renderer.render(input).utf8), to: mdPath)
         } catch {
             reason("cannot write the transcript: \(error)")

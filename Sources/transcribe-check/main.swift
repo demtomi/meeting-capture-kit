@@ -12,6 +12,11 @@
 import Foundation
 import NotetakerCore
 
+// Line-buffered stdout. Block buffering let a stderr write from the handoff land inside a
+// half-flushed "  FAIL  " line, which split the word, and a grep for the named failure
+// (the mutation harness's whole test) then missed a real red.
+setvbuf(stdout, nil, _IOLBF, 0)
+
 var failures = 0
 var checks = 0
 
