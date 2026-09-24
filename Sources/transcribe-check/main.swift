@@ -915,6 +915,61 @@ do {
           breaksIf: "a stale claim cannot be taken over, so a frozen holder blocks the take forever")
 }
 
+print("\n[claim] A DEAD HOLDER, AND TWO TAKERS OF ONE STALE CLAIM")
+do {
+    func deadPID() -> Int32 {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try! p.run(); p.waitUntilExit(); return p.processIdentifier
+    }
+    stub.reset()
+    let home = freshHome("claim-dead")
+    let t = makeTake(in: freshOutputDir("claim-dead"))
+    try! "\(deadPID()) leftover-token\n".write(to: t.workDir.appendingPathComponent(".claim"), atomically: true, encoding: .utf8)
+    let r = run([t.manifest.path], home: home)
+    check("claim: a fresh claim whose holder PID is dead is taken over at once",
+          r.rc == 0 && stub.uploads(track: "mic") == 1 && transcriptOf(t) != nil,
+          breaksIf: "a claim left by a killed process (a bootout, a crash) blocks the take for 30 minutes (rc \(r.rc))")
+
+    stub.reset()
+    let out = freshOutputDir("claim-dead-drain")
+    let td = makeTake(in: out)
+    try! fm.createDirectory(atPath: out.path + "/.transcribe-state", withIntermediateDirectories: true)
+    try! "\(deadPID()) leftover-token\n".write(toFile: out.path + "/.transcribe-state/drain.lock", atomically: true, encoding: .utf8)
+    let rd = run(["--drain", out.path], home: home)
+    check("claim: a fresh drain.lock whose holder PID is dead does not block the next drain",
+          rd.rc == 0 && transcriptOf(td) != nil && !exists(td.workDir),
+          breaksIf: "a drain killed by bootout on reinstall blocks all transcription for 30 minutes (rc \(rd.rc))")
+
+    // Two takers of one stale claim, interleaved exactly: the second arrives while the first
+    // is about to replace the claim. Exactly one may come out holding it.
+    let dir = freshOutputDir("claim-race")
+    let path = dir.path + "/.claim"
+    try! "\(getpid()) old-token\n".write(toFile: path, atomically: true, encoding: .utf8)
+    utimes(path, [timeval(tv_sec: 1, tv_usec: 0), timeval(tv_sec: 1, tv_usec: 0)])
+    var second: TakeClaim.Acquire?
+    let first = TakeClaim.acquire(path: path, stale: 60, log: { _ in }, beforeReplace: {
+        second = TakeClaim.acquire(path: path, stale: 60, log: { _ in })
+    })
+    // What acquire RETURNED. Re-reading the token afterwards would only measure the backstop
+    // that catches a double holder later, not whether acquire handed the claim out twice.
+    func holds(_ a: TakeClaim.Acquire?) -> Bool { if case .held = a { return true } else { return false } }
+    check("claim: two takers of one stale claim, interleaved, leave exactly one holder",
+          [holds(first), holds(second)].filter { $0 }.count == 1,
+          breaksIf: "takeover is stat-unlink-create, so both takers believe they hold the claim (first \(holds(first)), second \(holds(second)))")
+
+    stub.reset()
+    let homeP = freshHome("claim-race-proc")
+    let tp = makeTake(in: freshOutputDir("claim-race-proc"))
+    try! "\(getpid()) old-token\n".write(to: tp.workDir.appendingPathComponent(".claim"), atomically: true, encoding: .utf8)
+    utimes(tp.workDir.appendingPathComponent(".claim").path, [timeval(tv_sec: 1, tv_usec: 0), timeval(tv_sec: 1, tv_usec: 0)])
+    stub.enqueue("mic", [StubResponse(status: 200, body: scribeJSON(track: "mic", diarize: false), delay: 1)])
+    let p1 = launch([tp.manifest.path], home: homeP), p2 = launch([tp.manifest.path], home: homeP)
+    let codes = [p1.wait().rc, p2.wait().rc].sorted()
+    check("claim: two processes taking over one stale claim upload each track once",
+          stub.uploads(track: "mic") == 1 && stub.uploads(track: "system") == 1 && codes == [0, 6],
+          breaksIf: "both takers of a stale claim upload (codes \(codes), mic uploads \(stub.uploads(track: "mic")))")
+}
+
 // ------------------------------------------------------------------ [h] [i] refusals
 print("\n[h] [i] TAKES THAT CAN NEVER SUCCEED")
 do {

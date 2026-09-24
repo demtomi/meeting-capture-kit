@@ -3,8 +3,10 @@
 // manifest write and a synchronous run would upload the same audio twice.
 //
 // `.work/<id>/.claim` is created with O_EXCL and holds the holder's PID and a random
-// token. The holder refreshes its mtime every 30 s. A claim whose mtime is more than
-// 30 minutes old is stale and may be taken over.
+// token. The holder refreshes its mtime every 30 s. A claim is stale, and may be taken
+// over, when its mtime is more than 30 minutes old or when its holder PID no longer exists
+// (a bootout or a crash). Takeover is serialised by an O_EXCL `<claim>.takeover` lock and
+// finishes with a rename, so exactly one taker comes out holding the claim.
 //
 // Sleep and SIGSTOP freeze the heartbeat, so a frozen holder can lose its claim to a new
 // one. It finds out on waking: before every upload and every write it re-reads the file,
@@ -42,25 +44,62 @@ public final class TakeClaim {
     }
 
     /// The same protocol on any path. The queue worker uses it for its drain lock.
-    public static func acquire(path: String, stale: Double = staleSeconds, log: (String) -> Void) -> Acquire {
+    /// Is the process that wrote this claim gone? Only ESRCH counts: EPERM means it exists.
+    static func holderIsDead(_ content: String) -> Bool {
+        guard let pid = content.split(separator: " ").first.flatMap({ Int32($0) }), pid > 0 else { return false }
+        return kill(pid, 0) != 0 && errno == ESRCH
+    }
+
+    /// A takeover lock older than this is itself stale. A takeover takes milliseconds.
+    static let takeoverLockStaleSeconds: Double = 60
+
+    /// `beforeReplace` is a test seam: it runs at the moment this taker is about to replace
+    /// a stale claim, so a check can put a second taker exactly there.
+    public static func acquire(path: String, stale: Double = staleSeconds, log: (String) -> Void,
+                               beforeReplace: (() -> Void)? = nil) -> Acquire {
         let token = UUID().uuidString
         var e = create(path, token: token)
         if e == EEXIST {
-            let attrs = try? FileManager.default.attributesOfItem(atPath: path)
-            let mtime = (attrs?[.modificationDate] as? Date) ?? Date()
+            guard let seen = try? String(contentsOfFile: path, encoding: .utf8) else {
+                // Released between our create and our read. Try once more.
+                e = create(path, token: token)
+                if e == EEXIST { return .heldElsewhere("another runner claimed it first") }
+                return finish(path: path, token: token, e: e)
+            }
+            let mtime = ((try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date) ?? Date()
             let age = Date().timeIntervalSince(mtime)
-            let holder = (try? String(contentsOfFile: path, encoding: .utf8))?.split(separator: " ").first.map(String.init) ?? "?"
-            guard age > stale else {
+            let holder = seen.split(separator: " ").first.map(String.init) ?? "?"
+            let dead = holderIsDead(seen)
+            guard age > stale || dead else {
                 return .heldElsewhere("claimed by pid \(holder), heartbeat \(Int(age)) s ago")
             }
-            log("[transcribe] taking over a stale claim (pid \(holder), heartbeat \(Int(age)) s ago)")
-            unlink(path)
-            e = create(path, token: token)
-            if e == EEXIST { return .heldElsewhere("another runner took the stale claim first") }
+            // One taker at a time. Without this, stat-unlink-create lets two takers of one
+            // stale claim both come out holding it.
+            let lock = path + ".takeover"
+            var le = create(lock, token: token)
+            if le == EEXIST, let l = try? String(contentsOfFile: lock, encoding: .utf8) {
+                let lage = Date().timeIntervalSince(((try? FileManager.default.attributesOfItem(atPath: lock))?[.modificationDate] as? Date) ?? Date())
+                if lage > takeoverLockStaleSeconds || holderIsDead(l) { unlink(lock); le = create(lock, token: token) }
+            }
+            guard le == 0 else { return .heldElsewhere("another runner is taking over this claim") }
+            defer { unlink(lock) }
+            // Still the claim we judged stale? Someone may have finished a takeover already.
+            guard (try? String(contentsOfFile: path, encoding: .utf8)) == seen else {
+                return .heldElsewhere("the claim changed while this runner was taking it over")
+            }
+            log("[transcribe] taking over a \(dead ? "dead holder's" : "stale") claim (pid \(holder), heartbeat \(Int(age)) s ago)")
+            beforeReplace?()
+            let tmp = path + ".new-\(getpid())"
+            unlink(tmp)
+            e = create(tmp, token: token)
+            if e == 0, rename(tmp, path) != 0 { e = errno; unlink(tmp) }
         }
+        return finish(path: path, token: token, e: e)
+    }
+
+    static func finish(path: String, token: String, e: Int32) -> Acquire {
         guard e == 0 else { return .failed("cannot create \(path): \(String(cString: strerror(e)))") }
         let c = TakeClaim(path: path, token: token)
-        // Two takers of one stale claim can both believe they won. The re-read settles it.
         guard c.stillMine() else { return .heldElsewhere("lost the claim to another runner at takeover") }
         return .held(c)
     }

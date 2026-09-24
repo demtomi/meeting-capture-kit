@@ -157,7 +157,7 @@ limb "the token is never re-checked" "$CLAIM" \
     's/        return s.split(separator: " ").dropFirst().first.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) } == token/        return !s.isEmpty/' \
     "g3 a holder stopped past the stale age loses its claim: it exits 6, uploads nothing, writes nothing"
 limb "a stale claim can never be taken over" "$CLAIM" \
-    's/            guard age > stale else {/            guard age > stale * 1000 else {/' \
+    's/            guard age > stale || dead else {/            guard age > stale * 1000 || dead else {/' \
     "g3 ...and the runner that took over finishes with exactly one upload per track"
 
 # ======================================================================== the status table
@@ -272,6 +272,12 @@ limb "the capture CLI ignores the take's keep_audio" "$HANDOFF" \
 limb "--keep-audio is not written into the take" "$CAPMAN" \
     's/        if keepAudio { m\["keep_audio"\] = true }/        if false { m["keep_audio"] = true }/' \
     "capture-manifest: --keep-audio is written into the take as keep_audio, as schema 2"
+limb "a dead holder's claim waits out the stale age" "$CLAIM" \
+    's/            let dead = holderIsDead(seen)/            let dead = false/' \
+    "claim: a fresh claim whose holder PID is dead is taken over at once"
+limb "takeover is not serialised" "$CLAIM" \
+    's/            guard le == 0 else { return .heldElsewhere("another runner is taking over this claim") }/            guard true else { return .heldElsewhere("another runner is taking over this claim") }/' \
+    "claim: two takers of one stale claim, interleaved, leave exactly one holder"
 
 echo
 echo "======================================================="
