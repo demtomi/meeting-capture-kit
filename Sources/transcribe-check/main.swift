@@ -690,6 +690,23 @@ do {
           breaksIf: "keep-audio stops the delete but not the re-pick, so every drain pays again")
 }
 
+print("\n[args] A FLAG'S VALUE IS NEVER THE OUTPUT DIR")
+do {
+    let home = freshHome("args")
+    let out = freshOutputDir("args")
+    try! WorkerConfig(output_dir: out.path).save(home.path + "/.config/meeting-capture/config.json")
+    let t = makeTake(in: out)
+    let tr = loggingTranscriber("args", "exit 1")
+    let r = run(["--drain", "--transcriber", tr.path], home: home)
+    check("args: --drain --transcriber <path> drains the configured dir, not <path>/.work",
+          tr.calls() == 1 && attempts(t) == 1,
+          breaksIf: "a valued flag's argument is read as the positional output dir (rc \(r.rc), calls \(tr.calls()))")
+    let st = run(["--status", "--transcriber", tr.path], home: home)
+    check("args: --status with a valued flag still reports the configured dir",
+          st.out.contains(t.id),
+          breaksIf: "--status reads a flag's value as its dir")
+}
+
 // ------------------------------------------------------------------ [d] two runners
 print("\n[d] TWO RUNNERS ON ONE TAKE UPLOAD IT ONCE")
 do {

@@ -56,11 +56,27 @@ func value(after flag: String) -> String? {
     return args[i + 1]
 }
 
+/// Flags that take a value. The token after one of these is its value, never a positional.
+let valuedFlags: Set<String> = ["--transcriber", "--output-dir", "--key-probe"]
+
+/// Positional arguments after `flag`: every token that is not a flag and not the value of a
+/// valued flag.
+func positionals(after flag: String) -> [String] {
+    let i = args.firstIndex(of: flag)!
+    var out: [String] = []
+    var j = i + 1
+    while j < args.count {
+        let a = args[j]
+        if valuedFlags.contains(a) { j += 2; continue }
+        if !a.hasPrefix("-") { out.append(a) }
+        j += 1
+    }
+    return out
+}
+
 /// The first positional argument after `flag`, else the configured output dir.
 func outputDir(after flag: String, skip: Int = 0) -> String {
-    let i = args.firstIndex(of: flag)!
-    let positional = args[(i + 1)...].filter { !$0.hasPrefix("-") }
-    let rest = Array(positional.dropFirst(skip))
+    let rest = Array(positionals(after: flag).dropFirst(skip))
     if let d = rest.first ?? config.output_dir {
         return (d as NSString).expandingTildeInPath
     }

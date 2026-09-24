@@ -247,6 +247,13 @@ limb "the API base override accepts any host" "$CLIENT" \
     's/        guard loopbackHosts.contains(h.lowercased()) else {/        guard !h.isEmpty else {/' \
     "override: a non-loopback API base is refused with exit 2 and nothing is sent"
 
+# ======================================================================== review fixes
+echo
+echo "== review fixes"
+limb "a valued flag's argument is read as the output dir" "$MAIN" \
+    's/        if valuedFlags.contains(a) { j += 2; continue }/        if false { j += 2; continue }/' \
+    "args: --drain --transcriber <path> drains the configured dir, not <path>/.work"
+
 echo
 echo "======================================================="
 [ "$PASS" = 1 ] && echo "  TRANSCRIBE FALSIFICATION: PASS" || echo "  TRANSCRIBE FALSIFICATION: FAIL"
