@@ -297,7 +297,7 @@ limb "the watchdog also fires during processing" "$CLIENT" \
     's/        guard !didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }/        guard !didStall, Date().timeIntervalSince(lastProgress) > limit else { return false }/' \
     "c a slow answer after the whole body is sent is waited for, not called a stall"
 limb "a kept, proven take is left unmarked" "$HANDOFF" \
-    's/        } else if status == 0 \&\& keepAudio \&\& proveTake(manifestPath: manifestPath, outputDir: outputDir) == nil {/        } else if false {/' \
+    's/        } else if proofPasses \&\& keepAudio {/        } else if false {/' \
     "keep: a kept take the capture CLI already transcribed is marked done and never re-run"
 limb "--output-dir is ignored by the worker commands" "$MAIN" \
     's/    let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir ?? defaultOutputDir/    let d = rest.first ?? config.output_dir ?? defaultOutputDir/' \
@@ -314,6 +314,12 @@ limb "install() bootstraps without waiting" "$INSTALL" \
 limb "the doctor probe bootstraps without waiting" "$CORE/Doctor.swift" \
     's/        guard LaunchAgent.waitUntilUnloaded(isLoaded: { LaunchAgent.isLoaded(label, runner: runner) }, sleep: sleep) else {/        guard true else {/' \
     "doctor: the key probe bootstraps only after print says the old probe is gone, and never while it stays"
+limb "a proven take is transcribed again" "$WORKER" \
+    's/            let alreadyDone = proveTake(manifestPath: dir + "\/manifest.json", outputDir: layout.root) == nil/            let alreadyDone = false/' \
+    "keep: a drain in the gap before the marker does not re-transcribe a proven, kept take"
+limb "the kept-take marker is written without the claim" "$HANDOFF" \
+    's/    switch TakeClaim.acquire(takeDir: workDir, log: { _ in }) {/    switch TakeClaim.Acquire.held(TakeClaim(path: workDir + "\/.unused", token: "x")) {/' \
+    "keep: the capture CLI does not mark a kept take while another live runner holds its claim"
 
 echo
 echo "======================================================="

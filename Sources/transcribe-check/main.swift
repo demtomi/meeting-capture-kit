@@ -845,6 +845,29 @@ do {
     check("keep: a kept take the capture CLI already transcribed is marked done and never re-run",
           exists(t3.workDir, ".transcribed") && again.calls() == 0 && st.contains("\(t3.id)  done (audio kept)"),
           breaksIf: "the worker re-transcribes a take the synchronous path finished (calls \(again.calls()))")
+
+    // The GAP: the transcriber has released its claim and the capture CLI has not yet marked
+    // the kept take. A drain arriving now finds a proven transcript and no marker.
+    let out4 = freshOutputDir("keep-gap")
+    let t4 = makeTake(in: out4, keepAudio: true)
+    let pw = stubTranscriber("keep-gap-proof", writeProofShell + "\nexit 0")
+    let p4 = Process(); p4.executableURL = URL(fileURLWithPath: pw); p4.arguments = [t4.manifest.path]
+    try! p4.run(); p4.waitUntilExit()                  // proven transcript on disk, no marker yet
+    let gap = loggingTranscriber("keep-gap-again", "exit 0")
+    _ = run(["--drain", out4.path, "--transcriber", gap.path], home: home)
+    check("keep: a drain in the gap before the marker does not re-transcribe a proven, kept take",
+          gap.calls() == 0 && exists(t4.workDir, ".transcribed") && exists(t4.workDir, "mic.wav"),
+          breaksIf: "the worker re-runs a take whose transcript is already proven (calls \(gap.calls()))")
+
+    // The capture CLI marks a kept take only while holding its claim.
+    let out5 = freshOutputDir("keep-claimed")
+    let t5 = makeTake(in: out5)
+    let proofThenClaimed = stubTranscriber("keep-proof-claimed", writeProofShell + "\nprintf '\(getpid()) someone-elses-token\\n' > \"$(dirname \"$1\")/.claim\"\nexit 0")
+    _ = runTranscriberHandoff(workDir: t5.workDir.path, manifestPath: t5.manifest.path, transcriber: proofThenClaimed,
+                              outputDir: out5.path, keepAudio: true, foreground: true)
+    check("keep: the capture CLI does not mark a kept take while another live runner holds its claim",
+          !exists(t5.workDir, ".transcribed") && exists(t5.workDir, "mic.wav"),
+          breaksIf: "the marker is written without the claim, racing the runner that holds it")
 }
 
 print("\n[del] A DELETER HOLDS THE CLAIM, AND A VANISHED TAKE IS SKIPPED")

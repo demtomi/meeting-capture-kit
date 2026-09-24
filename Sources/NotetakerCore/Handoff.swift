@@ -19,6 +19,23 @@ private func err(_ s: String) {
     FileHandle.standardError.write(s.data(using: .utf8)!)
 }
 
+/// Kept on purpose and proven done: mark it `.transcribed` so the queue worker never
+/// transcribes it again. Written while HOLDING the take's claim, so it cannot race a runner
+/// that holds it, and a write that fails is said out loud.
+func markKeptTake(_ workDir: String) {
+    switch TakeClaim.acquire(takeDir: workDir, log: { _ in }) {
+    case .held(let claim):
+        defer { claim.release() }
+        let wrote = FileManager.default.createFile(atPath: workDir + "/" + Marker.transcribed,
+                                                   contents: Data("done by the capture CLI, audio kept by keep-audio\n".utf8))
+        if !wrote { err("[meeting-capture] could not mark \(workDir) as transcribed, so the queue worker may transcribe it again\n") }
+    case .heldElsewhere(let why):
+        err("[meeting-capture] the transcript is written and the audio kept, but another runner holds this take (\(why)), so that runner marks it\n")
+    case .failed(let why):
+        err("[meeting-capture] could not claim \(workDir) to mark it transcribed: \(why)\n")
+    }
+}
+
 /// Run `transcriber` on `manifestPath` and return the status the CLI should exit with.
 ///
 /// Nothing here knows what a transcript is. It runs the executable, passing the manifest
@@ -78,20 +95,17 @@ public func runTranscriberHandoff(workDir: String, manifestPath: String, transcr
         // `--keep-audio`, or MEETING_CAPTURE_KEEP_AUDIO in the environment, opts out.
         // The take's own manifest can also say keep, whoever launched this.
         let keepAudio = keepAudio || ((try? Manifest.load(path: manifestPath))?.keepAudio ?? false)
-        let proof: ProofFailure? = (status == 0 && !keepAudio)
-            ? proveTake(manifestPath: manifestPath, outputDir: outputDir) : nil
-        let proofPasses = proof == nil
+        // The proof, re-read from disk once.
+        let proof: ProofFailure? = status == 0 ? proveTake(manifestPath: manifestPath, outputDir: outputDir) : nil
+        let proofPasses = status == 0 && proof == nil
         if status == 0 && !keepAudio && proofPasses {
             if case .heldElsewhere(let why) = removeTakeHoldingClaim(workDir) {
                 err("[meeting-capture] the transcript is written, but another runner holds this take (\(why)), so it is left for that runner to finish\n")
             }
         } else if let proof {
             err("[meeting-capture] the transcriber exited 0 but \(proof), so the audio is kept in \(workDir)\n")
-        } else if status == 0 && keepAudio && proveTake(manifestPath: manifestPath, outputDir: outputDir) == nil {
-            // Kept on purpose, and proven done: mark it, so the queue worker never transcribes
-            // it again. Its terminal-marker scan skips a take carrying .transcribed.
-            FileManager.default.createFile(atPath: workDir + "/" + Marker.transcribed,
-                                           contents: Data("done by the capture CLI, audio kept by keep-audio\n".utf8))
+        } else if proofPasses && keepAudio {
+            markKeptTake(workDir)
         }
         return status
     } catch {

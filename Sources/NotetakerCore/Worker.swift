@@ -165,7 +165,12 @@ public final class Worker {
             let dir = layout.take(id)
             let n = attempts(dir).count
             log("processing \(id) (attempt \(n + 1))")
-            let (rc, reason, _) = runTranscriber(dir + "/manifest.json", id: id)
+            // A take whose transcript is already proven is never transcribed again, whoever
+            // wrote it (the capture CLI in the gap before its marker, or an earlier drain that
+            // crashed before its delete). It goes straight to the done handling below.
+            let alreadyDone = proveTake(manifestPath: dir + "/manifest.json", outputDir: layout.root) == nil
+            if alreadyDone { log("\(id) already has a proven transcript. Not transcribing it again.") }
+            let (rc, reason, _) = alreadyDone ? (ExitCode.ok, "", false) : runTranscriber(dir + "/manifest.json", id: id)
             let why = reason.isEmpty ? "exit \(rc)" : reason
 
             do {
