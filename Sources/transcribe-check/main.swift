@@ -1246,6 +1246,27 @@ do {
           holding && !holds(whileHeld) && holds(afterDeath),
           breaksIf: "the takeover lock is not an flock the kernel ties to its holder (holder \(holding), while held \(holds(whileHeld)), after death \(holds(afterDeath)))")
 
+    // The takeover lock's file descriptor must not leak into a child spawned while it is held:
+    // an inherited descriptor keeps the flock alive after this process lets go of it.
+    let dir4 = freshOutputDir("takeover-cloexec")
+    let path4 = dir4.path + "/.claim"
+    try! "\(getpid()) old-token\n".write(toFile: path4, atomically: true, encoding: .utf8)
+    utimes(path4, [timeval(tv_sec: 1, tv_usec: 0), timeval(tv_sec: 1, tv_usec: 0)])
+    var child: pid_t = 0
+    _ = TakeClaim.acquire(path: path4, stale: 60, log: { _ in }, beforeReplace: {
+        // A plain posix_spawn, no CLOEXEC_DEFAULT: the child inherits every descriptor
+        // that is not marked close-on-exec.
+        let argv: [UnsafeMutablePointer<CChar>?] = [strdup("/bin/sleep"), strdup("5"), nil]
+        _ = posix_spawn(&child, "/bin/sleep", nil, nil, argv, environ)
+    })
+    let probeFD = open(path4 + ".takeover", O_RDWR)
+    let freeAfter = probeFD >= 0 && flock(probeFD, LOCK_EX | LOCK_NB) == 0
+    if probeFD >= 0 { close(probeFD) }
+    if child > 0 { kill(child, SIGKILL); var st: Int32 = 0; waitpid(child, &st, 0) }
+    check("claim: the takeover lock is free once acquire returns, even with a child spawned meanwhile",
+          child > 0 && freeAfter,
+          breaksIf: "the lock's descriptor has no O_CLOEXEC, so a child keeps the flock alive after the takeover")
+
     stub.reset()
     let homeP = freshHome("claim-race-proc")
     let tp = makeTake(in: freshOutputDir("claim-race-proc"))

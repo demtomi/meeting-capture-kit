@@ -76,12 +76,20 @@ public final class TakeClaim {
             // <claim>.takeover: only the process holding the open file holds it, the kernel
             // drops it when that process dies (so there is no stale lock to recover, and no
             // unlink-then-create to race), and closing our file cannot release anyone else's.
+            // O_CLOEXEC: a child spawned while the lock is held must not inherit the descriptor,
+            // or the flock outlives this takeover. The file is deliberately never unlinked:
+            // unlinking a file others may flock breaks the exclusion (a holder keeps a lock on
+            // the unlinked inode while a newcomer creates and locks a fresh file). It lives in
+            // the take folder, which goes with the take, or as one empty file beside drain.lock.
             beforeTakingLock?()
-            let lockFD = open(path + ".takeover", O_CREAT | O_RDWR, 0o644)
+            let lockFD = open(path + ".takeover", O_CREAT | O_RDWR | O_CLOEXEC, 0o644)
             guard lockFD >= 0 else { return .failed("cannot open \(path).takeover: \(String(cString: strerror(errno)))") }
             defer { close(lockFD) }
             guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
-                return .heldElsewhere("another runner is taking over this claim")
+                let e = errno
+                // Only EWOULDBLOCK means someone else holds it. Anything else is a real error.
+                if e == EWOULDBLOCK { return .heldElsewhere("another runner is taking over this claim") }
+                return .failed("cannot lock \(path).takeover: \(String(cString: strerror(e)))")
             }
             // Still the claim we judged stale? Someone may have finished a takeover already.
             guard (try? String(contentsOfFile: path, encoding: .utf8)) == seen else {

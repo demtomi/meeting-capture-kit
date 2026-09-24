@@ -347,6 +347,9 @@ limb "a rename failure is blamed on another runner" "$CLAIM" \
 limb "the deleter spells the tombstone prefix itself" "$CLAIM" \
     's/            .appendingPathComponent("\\(tombstonePrefix)\\((takeDir/            .appendingPathComponent(".gone-\\((takeDir/' \
     "tomb: the tombstone is named with the prefix the cleaner looks for"
+limb "the takeover lock leaks into children" "$CLAIM" \
+    's/            let lockFD = open(path + ".takeover", O_CREAT | O_RDWR | O_CLOEXEC, 0o644)/            let lockFD = open(path + ".takeover", O_CREAT | O_RDWR, 0o644)/' \
+    "claim: the takeover lock is free once acquire returns, even with a child spawned meanwhile"
 
 echo
 echo "======================================================="
