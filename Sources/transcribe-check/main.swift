@@ -823,6 +823,34 @@ do {
           breaksIf: "a marker write into a removed take aborts the whole drain (rc \(r3.rc))")
 }
 
+print("\n[tomb] A TAKE LEAVES THE QUEUE IN ONE STEP")
+do {
+    // A recursive delete removes .claim before the folder, and another runner could claim
+    // the half-deleted folder in that gap. So the take must already be gone from its queue
+    // name when the non-atomic delete begins.
+    let out = freshOutputDir("tomb")
+    let t = makeTake(in: out)
+    var stillQueued = true
+    let r = removeTakeHoldingClaim(t.workDir.path, beforeRecursiveDelete: { stillQueued = fm.fileExists(atPath: t.workDir.path) })
+    check("tomb: the take is out of .work/<id> before the recursive delete starts",
+          r == .removed && !stillQueued && !exists(t.workDir),
+          breaksIf: "the take is deleted in place, so a runner can claim a half-deleted folder")
+    let leftovers = ((try? fm.contentsOfDirectory(atPath: out.path + "/.work")) ?? []).filter { $0.hasPrefix(".deleting-") }
+    check("tomb: nothing is left behind after a removal", leftovers.isEmpty,
+          breaksIf: "the tombstone is renamed but never deleted")
+
+    let home = freshHome("tomb")
+    let out2 = freshOutputDir("tomb-crash")
+    let crashed = out2.appendingPathComponent(".work/.deleting-2026-01-02T03-04-05Z-ab12-sometoken")
+    try! fm.createDirectory(at: crashed, withIntermediateDirectories: true)
+    try! wavData(seconds: 1, amplitude: 8000).write(to: crashed.appendingPathComponent("mic.wav"))
+    let live = makeTake(in: out2, id: "2026-01-02T03-04-06Z-00ok")
+    _ = run(["--drain", out2.path], home: home)
+    check("tomb: a tombstone left by a crash is cleaned by the next drain, and is never transcribed",
+          !exists(crashed) && transcriptOf(live) != nil && transcriptOf(Take(outputDir: out2, id: "2026-01-02T03-04-05Z-ab12")) == nil,
+          breaksIf: "a crash mid-delete leaves audio behind forever, or the drain treats a tombstone as a take")
+}
+
 // ------------------------------------------------------------------ [d] two runners
 print("\n[d] TWO RUNNERS ON ONE TAKE UPLOAD IT ONCE")
 do {

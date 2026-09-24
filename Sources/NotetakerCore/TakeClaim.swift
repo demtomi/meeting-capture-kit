@@ -128,6 +128,9 @@ public final class TakeClaim {
     }
 }
 
+/// Tombstones of takes being deleted, by name prefix. Never a take.
+public let tombstonePrefix = ".deleting-"
+
 public enum TakeRemoval: Equatable {
     case removed
     case alreadyGone
@@ -136,12 +139,25 @@ public enum TakeRemoval: Equatable {
 
 /// Removes a take's folder only while holding its claim, so no deleter can pull a take out
 /// from under a runner that is still working on it. A folder already gone is success.
-public func removeTakeHoldingClaim(_ takeDir: String, log: (String) -> Void = { _ in }) -> TakeRemoval {
+/// `beforeRecursiveDelete` is a test seam: it runs just before the non-atomic recursive delete.
+public func removeTakeHoldingClaim(_ takeDir: String, log: (String) -> Void = { _ in },
+                                   beforeRecursiveDelete: (() -> Void)? = nil) -> TakeRemoval {
     guard FileManager.default.fileExists(atPath: takeDir) else { return .alreadyGone }
     switch TakeClaim.acquire(takeDir: takeDir, log: log) {
-    case .held:
-        try? FileManager.default.removeItem(atPath: takeDir)
-        return FileManager.default.fileExists(atPath: takeDir) ? .heldElsewhere("could not remove it") : .removed
+    case .held(let claim):
+        // Out of the queue in ONE step, while the claim is held: a rename to a tombstone.
+        // A recursive delete in place removes .claim before the folder, and another runner
+        // could claim the half-deleted folder in that gap. The tombstone's dot-name keeps
+        // every scan off it, and the next drain clears one a crash left behind.
+        let tomb = ((takeDir as NSString).deletingLastPathComponent as NSString)
+            .appendingPathComponent(".deleting-\((takeDir as NSString).lastPathComponent)-\(claim.token)")
+        guard rename(takeDir, tomb) == 0 else {
+            claim.release()
+            return .heldElsewhere("could not move it out of the queue: \(String(cString: strerror(errno)))")
+        }
+        beforeRecursiveDelete?()
+        try? FileManager.default.removeItem(atPath: tomb)
+        return .removed
     case .heldElsewhere(let why):
         return .heldElsewhere(why)
     case .failed(let why):

@@ -293,6 +293,12 @@ limb "the installer does not wait for bootout" "$INSTALL" \
 limb "a relative transcriber reaches taskpolicy" "$HANDOFF" \
     's/    let transcriber = absolute(transcriber)/    let transcriber = transcriber/' \
     "g2 a relative transcriber path runs on the throttled path too"
+limb "a take is deleted in place" "$CLAIM" \
+    's/        guard rename(takeDir, tomb) == 0 else {/        guard rename(takeDir, takeDir) == 0 else {/' \
+    "tomb: the take is out of .work/<id> before the recursive delete starts"
+limb "a crash's tombstone is never cleaned" "$WORKER" \
+    's/^        clearTombstones()$/        _ = 0/' \
+    "tomb: a tombstone left by a crash is cleaned by the next drain, and is never transcribed"
 
 echo
 echo "======================================================="

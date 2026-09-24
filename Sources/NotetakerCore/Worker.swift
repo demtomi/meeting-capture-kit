@@ -146,6 +146,7 @@ public final class Worker {
         }
         lock.startHeartbeat(every: heartbeatSeconds)
         defer { lock.release() }
+        clearTombstones()
 
         var skip: Set<String> = []
         while true {
@@ -229,6 +230,14 @@ public final class Worker {
             }
         }
         return ExitCode.ok
+    }
+
+    /// Removes tombstones a crash left mid-delete. Their takes were already transcribed.
+    func clearTombstones() {
+        for name in (try? fm.contentsOfDirectory(atPath: layout.workDir)) ?? [] where name.hasPrefix(tombstonePrefix) {
+            try? fm.removeItem(atPath: layout.workDir + "/" + name)
+            log("removed a leftover tombstone \(name)")
+        }
     }
 
     enum MarkFailure: Error {
