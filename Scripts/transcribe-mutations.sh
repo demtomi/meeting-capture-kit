@@ -48,6 +48,12 @@ restore() {
 }
 trap restore EXIT INT TERM
 
+# Does text $2 contain the fixed string $1? A here-string, never a pipe: under pipefail,
+# `printf "$OUT" | grep -q` fails with 141 once OUT outgrows the pipe buffer, because grep
+# exits on the first match and the writer takes SIGPIPE. That reads a real match as a miss.
+contains() { grep -qF -- "$1" <<< "$2"; }
+contains_re() { grep -qE -- "$1" <<< "$2"; }
+
 ok()  { echo "   ok   $1"; }
 bad() { echo "   FAIL $1"; PASS=0; }
 
@@ -76,7 +82,7 @@ mutate() {
     cp "$before" "$file"; rm -f "$before"
     # The NAMED case first. A build log can quote source containing the word error, so a
     # real red must never be reclassified as a build failure by testing that first.
-    if [ "$RC" -ne 0 ] && [ "$RC" -ne 97 ] && printf '%s' "$OUT" | grep -qF "FAIL  $expect"; then return 0; fi
+    if [ "$RC" -ne 0 ] && [ "$RC" -ne 97 ] && contains "FAIL  $expect" "$OUT"; then return 0; fi
     if [ "$RC" -eq 97 ]; then return 2; fi
     return 3
 }
@@ -88,15 +94,25 @@ limb() {
         0) ok "$label -> \"$expect\" bit" ;;
         1) bad "$label: the sed changed NOTHING, so this limb tested nothing" ;;
         2) bad "$label: the mutation did not build, so it tested nothing" ;;
-        *) bad "$label: \"$expect\" did not go red (exit $RC; red: $(printf '%s' "$OUT" | grep '  FAIL  ' | head -3 | tr '\n' ';'))" ;;
+        *) bad "$label: \"$expect\" did not go red (exit $RC; red: $(grep '  FAIL  ' <<< "$OUT" | head -3 | tr '\n' ';'))" ;;
     esac
 }
 
 # ======================================================================== controls
 echo "== controls"
+# The classifier must find a named FAIL in an output far larger than a pipe buffer. Under
+# pipefail a pipe into grep -q can report a real match as a miss (the writer takes SIGPIPE
+# when grep exits early), which would score a biting mutant as "did not go red".
+BIG="$(printf '  FAIL  planted named case\n'; head -c 2000000 /dev/zero | tr '\0' 'x')"
+if contains "FAIL  planted named case" "$BIG"; then
+    ok "control: a named FAIL is found in a 2 MB output"
+else
+    bad "control: a named FAIL in a 2 MB output was MISSED by the classifier"
+fi
+[ "${CONTROLS_ONLY:-}" = 1 ] && { echo "CONTROLS_ONLY: stopping after the output-size control"; [ "$PASS" = 1 ]; exit $?; }
 build_and_check
-if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qE '=== ([0-9]+)/\1 checks passed ==='; then
-    ok "baseline: transcribe-check passes on the unmutated tree ($(printf '%s' "$OUT" | grep -E '^=== ' | tail -1))"
+if [ "$RC" -eq 0 ] && contains_re '=== ([0-9]+)/\1 checks passed ===' "$OUT"; then
+    ok "baseline: transcribe-check passes on the unmutated tree ($(grep -E '^=== ' <<< "$OUT" | tail -1))"
 else
     bad "baseline: transcribe-check does NOT pass unmutated (exit $RC). Every result below would mean nothing."
 fi
