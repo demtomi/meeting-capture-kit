@@ -66,7 +66,10 @@ OPTIONS
   --seconds <n>           Stop after n seconds. Default: run until you stop it.
   --host <name>           Speaker label for the mic track. Default: your account name.
   --lang <code>           Advisory language hint, written to the manifest.
-  --speakers <n>          Advisory head count for mic-multi, written to the manifest.
+  --speakers <n>          Head count, written to the manifest. On mic+system it is
+                          the number of REMOTE people (1 means one voice on the far
+                          side, so it is not diarized). On mic-multi it is the
+                          number of people in the room.
   --mic-device <name>     Substring of the microphone to use. Default: the built-in one.
   --output-dir <path>     Where recordings go. Default: ~/Documents/MeetingCaptures
   --transcriber <path>    Executable to run when recording stops. It receives the
@@ -153,7 +156,7 @@ let expectedSpeakers: Int? = {
         exit(2)
     }
     return v
-}()   // in-person head count (mic-multi)
+}()   // remote head count on mic+system, room head count on mic-multi
 let autoStop = hasFlag("--auto-stop")
 let keepAudio = hasFlag("--keep-audio")
     || ProcessInfo.processInfo.environment["MEETING_CAPTURE_KEEP_AUDIO"] != nil
@@ -459,7 +462,7 @@ var tracks: [String: Any] = [
 if wantSystem { tracks["system"] = ["path": "system.wav", "host": false] }
 
 var manifest: [String: Any] = [
-    "schema": 1,
+    "schema": 2,
     "meeting_id": meetingID,
     "label": label,
     "source": source,
@@ -469,9 +472,11 @@ var manifest: [String: Any] = [
     "output_dir": outputDir,
 ]
 if let langHint { manifest["language_hint"] = langHint }
-// In-person head count → pins pyannote to exactly N speakers (a single room mic
-// over-splits otherwise). Only meaningful for mic-multi; harmless elsewhere.
-if let expectedSpeakers, source == "mic-multi" { manifest["expected_speakers"] = expectedSpeakers }
+// Schema 2: written for EVERY source. On mic+system it is the remote head count, on
+// mic-multi the head count in the room. A transcriber pins diarization to it, and on a
+// one-remote-voice call skips diarization, which on one voice can only invent speakers.
+// Absent means not known, and the reader diarizes.
+if let expectedSpeakers { manifest["expected_speakers"] = expectedSpeakers }
 
 let manifestPath = "\(workDir)/manifest.json"
 let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])

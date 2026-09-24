@@ -185,6 +185,35 @@ do {
           breaksIf: "keep-audio stops being consulted before the delete")
 }
 
+// ------------------------------------------------------------------ [manifest] schemas
+print("\n[manifest] SCHEMA 1, 2 AND 3")
+do {
+    func manifestJSON(_ schema: Int, source: String = "mic+system", extra: String = "",
+                      micPath: String = "mic.wav") -> Data {
+        Data("""
+        {"schema": \(schema), "meeting_id": "2026-01-02T03-04-05Z-ab12", "label": "x", "source": "\(source)",
+         "started_at": "2026-01-02T04:04:05+01:00", "shared_start_monotonic_ns": 1, "output_dir": "/tmp/x",
+         "tracks": {"mic": {"path": "\(micPath)", "host": true, "speaker": "A"}} \(extra)}
+        """.utf8)
+    }
+    let v1 = try? Manifest.decode(manifestJSON(1, source: "mic-multi", extra: #", "expected_speakers": 4"#))
+    check("manifest: schema 1 decodes, with mic-multi expected_speakers", v1?.expectedSpeakers == 4 && v1?.schema == 1,
+          breaksIf: "schema 1 is dropped, so every take recorded before this change stops transcribing")
+    let v2 = try? Manifest.decode(manifestJSON(2, extra: #", "expected_speakers": 1"#))
+    check("manifest: schema 2 decodes expected_speakers on mic+system", v2?.expectedSpeakers == 1,
+          breaksIf: "expected_speakers is read only for mic-multi")
+    let v2none = try? Manifest.decode(manifestJSON(2))
+    check("manifest: an absent expected_speakers decodes as unknown", v2none != nil && v2none?.expectedSpeakers == nil,
+          breaksIf: "an absent head count becomes a default number")
+    var threeRefused = false
+    do { _ = try Manifest.decode(manifestJSON(3)) } catch Manifest.LoadError.unsupportedSchema(3) { threeRefused = true } catch {}
+    check("manifest: schema 3 is refused", threeRefused,
+          breaksIf: "the reader accepts a schema it does not know")
+    let climbing = try? Manifest.decode(manifestJSON(2, micPath: "../../elsewhere.wav"))
+    check("manifest: a track path that leaves the take dir is refused", climbing == nil,
+          breaksIf: "track paths are used without checking they are plain file names")
+}
+
 // ------------------------------------------------------------------ [proof] the rule itself
 print("\n[proof] THE SHARED PROOF FUNCTION")
 do {
