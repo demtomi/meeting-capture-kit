@@ -797,6 +797,18 @@ do {
     check("args: --status with a valued flag still reports the configured dir",
           st.out.contains(t.id),
           breaksIf: "--status reads a flag's value as its dir")
+
+    // --output-dir wins over the config on every worker command.
+    let other = freshOutputDir("args-other")
+    let tb = makeTake(in: other, id: "2026-01-02T03-04-05Z-0bbb")
+    try! "HTTP 500: synthetic\n".write(to: tb.workDir.appendingPathComponent(".upload-failed"), atomically: true, encoding: .utf8)
+    let stB = run(["--status", "--output-dir", other.path], home: home).out
+    let rq = run(["--requeue", tb.id, "--output-dir", other.path], home: home)
+    let tr2 = loggingTranscriber("args-other", "exit 1")
+    _ = run(["--drain", "--output-dir", other.path, "--transcriber", tr2.path], home: home)
+    check("args: --output-dir is honoured by --status, --requeue and --drain, over the config",
+          stB.contains(tb.id) && !stB.contains(t.id) && rq.rc == 0 && tr2.calls() == 1 && attempts(tb) == 1,
+          breaksIf: "--output-dir is silently ignored in favour of the configured dir (status \(stB.contains(tb.id)), requeue \(rq.rc), calls \(tr2.calls()))")
 }
 
 print("\n[keep] THE TAKE CARRIES THE KEEP DECISION")

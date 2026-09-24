@@ -29,7 +29,8 @@ USAGE
                                             Check the setup. --live spends credits.
                                             --no-capture-probe skips the 3 s test recording.
 
-<dir> defaults to the output_dir in ~/.config/meeting-capture/config.json.
+<dir> is --output-dir <dir> or the positional <dir>, else the output_dir in
+~/.config/meeting-capture/config.json, else ~/Documents/MeetingCaptures.
 
 OPTIONS FOR --drain
   --transcriber <path>   Run this executable per take instead of meeting-transcribe itself.
@@ -74,14 +75,15 @@ func positionals(after flag: String) -> [String] {
     return out
 }
 
-/// The first positional argument after `flag`, else the configured output dir.
+/// The capture CLI's own default, used when nothing else names the dir.
+let defaultOutputDir = "~/Documents/MeetingCaptures"
+
+/// The output dir for a worker command, in order: --output-dir, a positional argument after
+/// `flag`, the configured output_dir, then the capture CLI's default.
 func outputDir(after flag: String, skip: Int = 0) -> String {
     let rest = Array(positionals(after: flag).dropFirst(skip))
-    if let d = rest.first ?? config.output_dir {
-        return (d as NSString).expandingTildeInPath
-    }
-    err("no output dir given and none in \(UserPaths.configFile). Pass it: meeting-transcribe \(flag) <dir>")
-    exit(ExitCode.badArguments)
+    let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir ?? defaultOutputDir
+    return URL(fileURLWithPath: (d as NSString).expandingTildeInPath).standardizedFileURL.path
 }
 
 func ownPath() -> String {

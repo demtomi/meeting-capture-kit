@@ -311,6 +311,9 @@ limb "the watchdog also fires during processing" "$CLIENT" \
 limb "a kept, proven take is left unmarked" "$HANDOFF" \
     's/        } else if status == 0 \&\& keepAudio \&\& proveTake(manifestPath: manifestPath, outputDir: outputDir) == nil {/        } else if false {/' \
     "keep: a kept take the capture CLI already transcribed is marked done and never re-run"
+limb "--output-dir is ignored by the worker commands" "$MAIN" \
+    's/    let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir ?? defaultOutputDir/    let d = rest.first ?? config.output_dir ?? defaultOutputDir/' \
+    "args: --output-dir is honoured by --status, --requeue and --drain, over the config"
 
 echo
 echo "======================================================="
