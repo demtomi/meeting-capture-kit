@@ -320,6 +320,12 @@ limb "a proven take is transcribed again" "$WORKER" \
 limb "the kept-take marker is written without the claim" "$HANDOFF" \
     's/    switch TakeClaim.acquire(takeDir: workDir, log: { _ in }) {/    switch TakeClaim.Acquire.held(TakeClaim(path: workDir + "\/.unused", token: "x")) {/' \
     "keep: the capture CLI does not mark a kept take while another live runner holds its claim"
+limb "a valued flag with no value is dropped" "$MAIN" \
+    's/^for f in valuedFlags where args.contains(f) \&\& value(after: f) == nil {$/for f in valuedFlags where false {/' \
+    "args: a valued flag with no value is refused with exit 2"
+limb "install resolves its dir on its own" "$MAIN" \
+    's/^    let dir = outputDir(after: "--install-worker")$/    let dir = value(after: "--output-dir") ?? config.output_dir ?? "\/nonexistent"/' \
+    "args: --install-worker and --doctor resolve the dir like every other command"
 
 echo
 echo "======================================================="

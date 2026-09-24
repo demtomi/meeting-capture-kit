@@ -78,12 +78,26 @@ func positionals(after flag: String) -> [String] {
 /// The capture CLI's own default, used when nothing else names the dir.
 let defaultOutputDir = "~/Documents/MeetingCaptures"
 
-/// The output dir for a worker command, in order: --output-dir, a positional argument after
-/// `flag`, the configured output_dir, then the capture CLI's default.
-func outputDir(after flag: String, skip: Int = 0) -> String {
+/// THE one output-dir resolver, used by every command: --output-dir, then a positional
+/// argument after `flag`, then the configured output_dir, then the capture CLI's default.
+func resolveOutputDir(after flag: String, skip: Int = 0) -> String? {
     let rest = Array(positionals(after: flag).dropFirst(skip))
     let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir ?? defaultOutputDir
     return URL(fileURLWithPath: (d as NSString).expandingTildeInPath).standardizedFileURL.path
+}
+
+/// The resolved dir, or a refusal (exit 2) for a command that cannot run without one.
+func outputDir(after flag: String, skip: Int = 0) -> String {
+    if let d = resolveOutputDir(after: flag, skip: skip) { return d }
+    err("no output dir given and none in \(UserPaths.configFile). Pass it: meeting-transcribe \(flag) --output-dir <dir>")
+    exit(ExitCode.badArguments)
+}
+
+// A valued flag must carry its value. Dropping a trailing --output-dir silently would run the
+// command against a different folder than the one the person typed.
+for f in valuedFlags where args.contains(f) && value(after: f) == nil {
+    err("\(f) needs a value. Run meeting-transcribe --help")
+    exit(ExitCode.badArguments)
 }
 
 func ownPath() -> String {
@@ -151,17 +165,13 @@ if args.contains("--key-probe") {
     exit(Doctor.keyProbe(resultFile: f))
 }
 if args.contains("--doctor") {
-    let dir = (value(after: "--output-dir") ?? config.output_dir).map { ($0 as NSString).expandingTildeInPath }
+    let dir = resolveOutputDir(after: "--doctor")
     let d = Doctor(ownBinary: ownPath(), outputDir: dir, env: env, captureProbe: !args.contains("--no-capture-probe"))
     exit(d.run(live: args.contains("--live")))
 }
 
 if args.contains("--install-worker") {
-    guard let raw = value(after: "--output-dir") ?? config.output_dir else {
-        err("usage: meeting-transcribe --install-worker --output-dir <dir>")
-        exit(ExitCode.badArguments)
-    }
-    let dir = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath).standardizedFileURL.path
+    let dir = outputDir(after: "--install-worker")
     if args.contains("--consent-upload") {
         let rc = recordConsent()
         if rc != ExitCode.ok { exit(rc) }

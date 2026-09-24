@@ -811,6 +811,20 @@ do {
     check("args: --output-dir is honoured by --status, --requeue and --drain, over the config",
           stB.contains(tb.id) && !stB.contains(t.id) && rq.rc == 0 && tr2.calls() == 1 && attempts(tb) == 1,
           breaksIf: "--output-dir is silently ignored in favour of the configured dir (status \(stB.contains(tb.id)), requeue \(rq.rc), calls \(tr2.calls()))")
+
+    // One resolver for every command, and a valued flag with no value is refused.
+    let noValue = run(["--status", "--output-dir"], home: home)
+    let noValue2 = run(["--drain", "--transcriber"], home: home)
+    check("args: a valued flag with no value is refused with exit 2",
+          noValue.rc == 2 && noValue2.rc == 2 && noValue.out.contains("--output-dir needs a value"),
+          breaksIf: "a trailing --output-dir or --transcriber is silently dropped (rc \(noValue.rc), \(noValue2.rc))")
+    let posDir = freshOutputDir("args-positional")
+    let ins = run(["--install-worker", posDir.path], home: home, env: ["MEETING_TRANSCRIBE_TEST_NO_LAUNCHCTL": "1"])
+    let doc = run(["--doctor", posDir.path, "--no-capture-probe"], home: home, env: ["MEETING_TRANSCRIBE_TEST_NO_LAUNCHCTL": "1"])
+    check("args: --install-worker and --doctor resolve the dir like every other command",
+          ins.rc == 0 && WorkerConfig.load(home.path + "/.config/meeting-capture/config.json").output_dir == posDir.path
+            && doc.out.contains("output dir: \(posDir.path) is writable"),
+          breaksIf: "install and doctor ignore a positional dir the other commands honour (install rc \(ins.rc))")
 }
 
 print("\n[keep] THE TAKE CARRIES THE KEEP DECISION")
