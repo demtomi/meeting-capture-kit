@@ -36,7 +36,7 @@ INSTALL="$CORE/Install.swift"
 CAPMAN="$CORE/CaptureManifest.swift"
 MAIN="Sources/meeting-transcribe/main.swift"
 FILES=("$HANDOFF" "$WORKER" "$TRANSCRIBE" "$CLIENT" "$CLAIM" "$CONSENT" "$KEYS" "$WAV"
-       "$MANIFEST" "$PROOF" "$RENDER" "$INSTALL" "$CAPMAN" "$MAIN")
+       "$MANIFEST" "$PROOF" "$RENDER" "$INSTALL" "$CAPMAN" "$CORE/Doctor.swift" "$MAIN")
 
 BACKUP="$(mktemp -d)"
 for f in "${FILES[@]}"; do
@@ -317,6 +317,15 @@ limb "--output-dir is ignored by the worker commands" "$MAIN" \
 limb "--status ignores a dead holder" "$WORKER" \
     's/                      !TakeClaim.holderIsDead(read(d + "\/" + TakeClaim.fileName) ?? "") {/                      true {/' \
     "claim: --status shows a take whose claim holder is dead as pending, not claimed"
+limb "the wait gives up without a last look" "$INSTALL" \
+    's/        return !isLoaded()$/        return false/' \
+    "install: a job that is gone right after the last wait still counts as gone"
+limb "install() bootstraps without waiting" "$INSTALL" \
+    's/        guard waitUntilUnloaded(isLoaded: { isLoaded(label, runner: runner) }, sleep: sleep) else {/        guard true else {/' \
+    "install: bootstrap runs only after print says the old job is gone, and never while it stays"
+limb "the doctor probe bootstraps without waiting" "$CORE/Doctor.swift" \
+    's/        guard LaunchAgent.waitUntilUnloaded(isLoaded: { LaunchAgent.isLoaded(label, runner: runner) }, sleep: sleep) else {/        guard true else {/' \
+    "doctor: the key probe bootstraps only after print says the old probe is gone, and never while it stays"
 
 echo
 echo "======================================================="

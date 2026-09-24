@@ -15,7 +15,14 @@ public final class Doctor {
     let captureProbe: Bool
     let fm = FileManager.default
 
-    public init(ownBinary: String, outputDir: String?, env: RuntimeEnv, captureProbe: Bool) {
+    let runner: LaunchAgent.Runner
+    let keyProbeWait: Double
+    let sleep: (Double) -> Void
+
+    public init(ownBinary: String, outputDir: String?, env: RuntimeEnv, captureProbe: Bool,
+                runner: @escaping LaunchAgent.Runner = LaunchAgent.realRunner, keyProbeWait: Double = 15,
+                sleep: @escaping (Double) -> Void = { Thread.sleep(forTimeInterval: $0) }) {
+        self.runner = runner; self.keyProbeWait = keyProbeWait; self.sleep = sleep
         self.ownBinary = ownBinary; self.outputDir = outputDir; self.env = env
         self.base = APIBase.resolve(override: env.apiBaseOverride).0
         self.knobs = base?.isLoopback == true ? env.testKnobs : TestKnobs()
@@ -82,7 +89,7 @@ public final class Doctor {
     }
 
     /// Reads the key the way the worker will: from a one-shot LaunchAgent, not this shell.
-    func launchdKeyRead() {
+    public func launchdKeyRead() {
         if knobs.noLaunchctl { add(.warn, "key from launchd: skipped (test mode)"); return }
         let label = "io.github.meeting-capture.key-probe"
         let tmp = NSTemporaryDirectory() + "meeting-transcribe-keyprobe-\(getpid())"
@@ -95,18 +102,21 @@ public final class Doctor {
             add(.fail, "key from launchd: cannot write the probe plist"); return
         }
         let uid = String(getuid())
-        LaunchAgent.launchctl(["bootout", "gui/\(uid)/\(label)"])
-        _ = LaunchAgent.waitUntilUnloaded(isLoaded: { LaunchAgent.isLoaded(label) })
-        let (rc, out) = LaunchAgent.launchctl(["bootstrap", "gui/\(uid)", plist])
-        defer { LaunchAgent.launchctl(["bootout", "gui/\(uid)/\(label)"]) }
+        _ = runner(["bootout", "gui/\(uid)/\(label)"])
+        guard LaunchAgent.waitUntilUnloaded(isLoaded: { LaunchAgent.isLoaded(label, runner: runner) }, sleep: sleep) else {
+            add(.fail, "key from launchd: an earlier probe is still unloading after 10 s. Run --doctor again.")
+            return
+        }
+        let (rc, out) = runner(["bootstrap", "gui/\(uid)", plist])
+        defer { _ = runner(["bootout", "gui/\(uid)/\(label)"]) }
         guard rc == 0 else { add(.fail, "key from launchd: probe did not load (\(out.trimmingCharacters(in: .whitespacesAndNewlines)))"); return }
-        let end = Date().addingTimeInterval(15)
+        let end = Date().addingTimeInterval(keyProbeWait)
         while Date() < end, !fm.fileExists(atPath: result) { Thread.sleep(forTimeInterval: 0.2) }
         let r = (try? String(contentsOfFile: result, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
         switch r {
         case "found": add(.pass, "key from launchd: the worker's context can read the Keychain item")
         case "missing": add(.fail, "key from launchd: a LaunchAgent cannot read the Keychain item \(KeySource.service). Add it with: \(KeySource.addCommand)")
-        default: add(.fail, "key from launchd: the probe gave no answer in 15 s")
+        default: add(.fail, "key from launchd: the probe gave no answer in \(Int(keyProbeWait.rounded(.up))) s")
         }
     }
 

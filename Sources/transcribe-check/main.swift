@@ -1282,8 +1282,53 @@ do {
     var pollsForever = 0
     let never = LaunchAgent.waitUntilUnloaded(isLoaded: { pollsForever += 1; return true }, timeout: 1, poll: 0.2, sleep: { _ in })
     check("install: after bootout it waits until the job is gone, and gives up after its timeout",
-          gone && polls == 4 && !never && pollsForever == 5,
+          gone && polls == 4 && !never && pollsForever == 6,
           breaksIf: "bootstrap follows bootout at once and fails on a job still tearing down (polls \(polls), \(pollsForever))")
+    // Gone exactly after the last sleep must still count as gone.
+    var pollsLate = 0
+    let late = LaunchAgent.waitUntilUnloaded(isLoaded: { pollsLate += 1; return pollsLate < 6 }, timeout: 1, poll: 0.2, sleep: { _ in })
+    check("install: a job that is gone right after the last wait still counts as gone",
+          late && pollsLate == 6,
+          breaksIf: "the wait sleeps once more after its last check and then gives up without looking (calls \(pollsLate))")
+
+    // The CALL SITES. The checks run install with launchctl skipped, so the helper alone can be
+    // tested, never whether install() and the doctor probe use it. A recording runner answers
+    // for launchctl: print says loaded twice, then gone.
+    func recorder(loadedFor n: Int) -> (LaunchAgent.Runner, () -> [String]) {
+        var calls: [String] = [], prints = 0
+        return ({ args in
+            calls.append(args[0])
+            if args[0] == "print" { prints += 1; return (prints <= n ? 0 : 113, "") }
+            return (0, "")
+        }, { calls })
+    }
+    let savedHome = ProcessInfo.processInfo.environment["HOME"] ?? ""
+    let recHome = freshHome("install-recorded")
+    setenv("HOME", recHome.path, 1)           // install() writes under HOME: keep it in scratch
+    let outR = freshOutputDir("install-recorded-out")
+    let (r1, c1) = recorder(loadedFor: 2)
+    let ok1 = LaunchAgent.install(binary: transcribeBin, outputDir: outR.path, loadAgent: true, runner: r1, sleep: { _ in })
+    let (r2, c2) = recorder(loadedFor: 1000)
+    let stuck = LaunchAgent.install(binary: transcribeBin, outputDir: outR.path, loadAgent: true, runner: r2, sleep: { _ in })
+    setenv("HOME", savedHome, 1)
+    check("install: bootstrap runs only after print says the old job is gone, and never while it stays",
+          c1() == ["bootout", "print", "print", "print", "bootstrap"] && ok1.code == 0
+            && !c2().contains("bootstrap") && stuck.code != 0,
+          breaksIf: "install() bootstraps straight after bootout (calls \(c1()), stuck calls end \(c2().suffix(2)))")
+
+    let (r3, c3) = recorder(loadedFor: 1)
+    let d3 = Doctor(ownBinary: transcribeBin, outputDir: nil, env: RuntimeEnv(), captureProbe: false,
+                    runner: r3, keyProbeWait: 0.3, sleep: { _ in })
+    d3.launchdKeyRead()
+    let (r4, c4) = recorder(loadedFor: 1000)
+    let d4 = Doctor(ownBinary: transcribeBin, outputDir: nil, env: RuntimeEnv(), captureProbe: false,
+                    runner: r4, keyProbeWait: 0.3, sleep: { _ in })
+    d4.launchdKeyRead()
+    check("doctor: the key probe bootstraps only after print says the old probe is gone, and never while it stays",
+          Array(c3().prefix(4)) == ["bootout", "print", "print", "bootstrap"] && !c4().contains("bootstrap")
+            && d4.lines.contains { $0.0 == .fail && $0.1.contains("still unloading") },
+          breaksIf: "the doctor bootstraps its probe straight after bootout (calls \(c3()))")
+
     let un = run(["--uninstall-worker"], home: home, env: noLaunch)
     check("uninstall: removes the plist, keeps consent unless asked, and says so",
           un.rc == 0 && !fm.fileExists(atPath: plistPath) && fm.fileExists(atPath: home.path + "/.config/meeting-capture/consent")

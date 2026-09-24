@@ -61,12 +61,18 @@ public enum LaunchAgent {
             if !isLoaded() { return true }
             sleep(poll)
         }
-        return false
+        // One last look after the final sleep: gone in that window is still gone.
+        return !isLoaded()
     }
 
+    /// Runs launchctl with arguments and returns its status and output. A seam: the check
+    /// injects a recorder to see which calls install() makes, and in what order.
+    public typealias Runner = ([String]) -> (Int32, String)
+    public static let realRunner: Runner = { launchctl($0) }
+
     /// `launchctl print` exits 0 while the job is still known to launchd.
-    public static func isLoaded(_ label: String) -> Bool {
-        launchctl(["print", "gui/\(uid())/\(label)"]).0 == 0
+    public static func isLoaded(_ label: String, runner: Runner = realRunner) -> Bool {
+        runner(["print", "gui/\(uid())/\(label)"]).0 == 0
     }
 
     /// Points `link` at `target` atomically: a temp symlink renamed over the old one.
@@ -84,7 +90,9 @@ public enum LaunchAgent {
 
     /// Copies `binary`, repoints the links, writes config and plist, and (unless told not
     /// to) loads the agent. Consent is checked by the caller.
-    public static func install(binary: String, outputDir: String, loadAgent: Bool) -> Result {
+    public static func install(binary: String, outputDir: String, loadAgent: Bool,
+                               runner: Runner = realRunner,
+                               sleep: @escaping (Double) -> Void = { Thread.sleep(forTimeInterval: $0) }) -> Result {
         var r = Result()
         let fm = FileManager.default
         do {
@@ -133,13 +141,13 @@ public enum LaunchAgent {
         // bootout first so a second install replaces the loaded job. Not loaded is fine.
         // bootout returns before launchd has torn the job down, and a bootstrap in that
         // window fails, so wait (up to 10 s) until launchd no longer knows the label.
-        launchctl(["bootout", "gui/\(uid())/\(label)"])
-        guard waitUntilUnloaded(isLoaded: { isLoaded(label) }) else {
+        _ = runner(["bootout", "gui/\(uid())/\(label)"])
+        guard waitUntilUnloaded(isLoaded: { isLoaded(label, runner: runner) }, sleep: sleep) else {
             r.lines.append("the previous worker is still unloading after 10 s. Nothing was loaded. Retry: meeting-transcribe --install-worker --output-dir \(outputDir)")
             r.code = ExitCode.transient
             return r
         }
-        let (rc, out) = launchctl(["bootstrap", "gui/\(uid())", plistPath])
+        let (rc, out) = runner(["bootstrap", "gui/\(uid())", plistPath])
         if rc != 0 {
             r.lines.append("launchctl bootstrap failed (\(rc)): \(out.trimmingCharacters(in: .whitespacesAndNewlines))")
             r.lines.append("the worker is NOT loaded. Retry: launchctl bootstrap gui/\(uid()) '\(plistPath)'")
