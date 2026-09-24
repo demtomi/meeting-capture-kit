@@ -741,7 +741,9 @@ do {
     let failed = makeTake(in: out, id: "2026-01-02T03-04-03Z-0003")
     try! "HTTP 500: synthetic\n".write(to: failed.workDir.appendingPathComponent(".upload-failed"), atomically: true, encoding: .utf8)
     let claimed = makeTake(in: out, id: "2026-01-02T03-04-04Z-0004")
-    try! "12345 sometoken\n".write(to: claimed.workDir.appendingPathComponent(".claim"), atomically: true, encoding: .utf8)
+    // A LIVE holder (this check's PID). A made-up PID is almost always dead, and a dead
+    // holder's claim is stale, so --status would rightly call it pending.
+    try! "\(getpid()) sometoken\n".write(to: claimed.workDir.appendingPathComponent(".claim"), atomically: true, encoding: .utf8)
     let silentT = makeTake(in: out, id: "2026-01-02T03-04-05Z-0005")
     try! "every track silent\n".write(to: silentT.workDir.appendingPathComponent(".silent-capture"), atomically: true, encoding: .utf8)
     let s1 = run(["--status", out.path], home: home2).out
