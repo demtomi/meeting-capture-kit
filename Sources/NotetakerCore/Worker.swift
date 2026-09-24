@@ -282,7 +282,9 @@ public final class Worker {
                 state = m == Marker.transcribed ? "done (audio kept)"
                     : "failed \(m): \(r)  -> meeting-transcribe --requeue \(id) \(layout.root)"
             } else if let c = (try? fm.attributesOfItem(atPath: d + "/" + TakeClaim.fileName))?[.modificationDate] as? Date,
-                      Date().timeIntervalSince(c) <= staleSeconds {
+                      Date().timeIntervalSince(c) <= staleSeconds,
+                      !TakeClaim.holderIsDead(read(d + "/" + TakeClaim.fileName) ?? "") {
+                // The same rule acquire() uses: a dead holder's claim is stale however fresh.
                 state = "claimed (in progress, heartbeat \(Int(Date().timeIntervalSince(c))) s ago)"
             } else if case let a = attempts(d), a.count > 0 {
                 let wait = max(0, Int(cooldown - (now - a.last)))

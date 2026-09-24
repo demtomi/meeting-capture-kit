@@ -314,6 +314,9 @@ limb "a kept, proven take is left unmarked" "$HANDOFF" \
 limb "--output-dir is ignored by the worker commands" "$MAIN" \
     's/    let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir ?? defaultOutputDir/    let d = rest.first ?? config.output_dir ?? defaultOutputDir/' \
     "args: --output-dir is honoured by --status, --requeue and --drain, over the config"
+limb "--status ignores a dead holder" "$WORKER" \
+    's/                      !TakeClaim.holderIsDead(read(d + "\/" + TakeClaim.fileName) ?? "") {/                      true {/' \
+    "claim: --status shows a take whose claim holder is dead as pending, not claimed"
 
 echo
 echo "======================================================="

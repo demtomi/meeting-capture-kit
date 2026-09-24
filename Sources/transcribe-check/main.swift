@@ -1055,6 +1055,14 @@ do {
           r.rc == 0 && stub.uploads(track: "mic") == 1 && transcriptOf(t) != nil,
           breaksIf: "a claim left by a killed process (a bootout, a crash) blocks the take for 30 minutes (rc \(r.rc))")
 
+    let outS = freshOutputDir("claim-dead-status")
+    let ts = makeTake(in: outS)
+    try! "\(deadPID()) leftover-token\n".write(to: ts.workDir.appendingPathComponent(".claim"), atomically: true, encoding: .utf8)
+    let st = run(["--status", outS.path], home: home).out
+    check("claim: --status shows a take whose claim holder is dead as pending, not claimed",
+          st.contains("\(ts.id)  pending") && !st.contains("claimed"),
+          breaksIf: "--status judges a claim by mtime only, so a dead holder reads as in progress for 30 minutes")
+
     stub.reset()
     let out = freshOutputDir("claim-dead-drain")
     let td = makeTake(in: out)
