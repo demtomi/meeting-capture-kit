@@ -951,11 +951,36 @@ do {
     let crashed = out2.appendingPathComponent(".work/.deleting-2026-01-02T03-04-05Z-ab12-sometoken")
     try! fm.createDirectory(at: crashed, withIntermediateDirectories: true)
     try! wavData(seconds: 1, amplitude: 8000).write(to: crashed.appendingPathComponent("mic.wav"))
+    let longAgo = [timeval(tv_sec: 1, tv_usec: 0), timeval(tv_sec: 1, tv_usec: 0)]
+    utimes(crashed.path, longAgo)               // a crash long ago: nothing is deleting it now
     let live = makeTake(in: out2, id: "2026-01-02T03-04-06Z-00ok")
     _ = run(["--drain", out2.path], home: home)
     check("tomb: a tombstone left by a crash is cleaned by the next drain, and is never transcribed",
           !exists(crashed) && transcriptOf(live) != nil && transcriptOf(Take(outputDir: out2, id: "2026-01-02T03-04-05Z-ab12")) == nil,
           breaksIf: "a crash mid-delete leaves audio behind forever, or the drain treats a tombstone as a take")
+
+    // A FRESH tombstone may belong to a deleter that is still at work: leave it alone.
+    let out3 = freshOutputDir("tomb-fresh")
+    let fresh = out3.appendingPathComponent(".work/.deleting-2026-01-02T03-04-05Z-ab12-livetoken")
+    try! fm.createDirectory(at: fresh, withIntermediateDirectories: true)
+    try! wavData(seconds: 1, amplitude: 8000).write(to: fresh.appendingPathComponent("mic.wav"))
+    _ = run(["--drain", out3.path], home: home)
+    check("tomb: a fresh tombstone, maybe mid-delete by a live runner, is left alone",
+          exists(fresh),
+          breaksIf: "the drain races a live deleter on a tombstone it just made")
+
+    // A tombstone that cannot be removed is reported as such, never as removed.
+    let out4 = freshOutputDir("tomb-stuck")
+    let stuck = out4.appendingPathComponent(".work/.deleting-2026-01-02T03-04-05Z-ab12-stucktoken")
+    try! fm.createDirectory(at: stuck, withIntermediateDirectories: true)
+    try! wavData(seconds: 1, amplitude: 8000).write(to: stuck.appendingPathComponent("mic.wav"))
+    utimes(stuck.path, longAgo)
+    chmod(stuck.path, 0o555)                    // its file cannot be unlinked, so neither can it
+    let r4 = run(["--drain", out4.path], home: home)
+    chmod(stuck.path, 0o755)
+    check("tomb: a tombstone that cannot be removed is logged as such, not as removed",
+          exists(stuck) && r4.out.contains("could not remove") && !r4.out.contains("removed a leftover tombstone"),
+          breaksIf: "the log says a tombstone was removed when it is still on disk")
 }
 
 // ------------------------------------------------------------------ [d] two runners

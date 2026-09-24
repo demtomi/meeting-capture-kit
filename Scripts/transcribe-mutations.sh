@@ -335,6 +335,12 @@ limb "--resume succeeds with nothing to resume" "$WORKER" \
 limb "the resume hint omits the folder" "$WORKER" \
     "s/    var resumeCommand: String { \"meeting-transcribe --resume '\\\\(layout.root)'\" }/    var resumeCommand: String { \"meeting-transcribe --resume\" }/" \
     "c drain: the pause message names the folder to resume"
+limb "a fresh tombstone is cleared under a live deleter" "$WORKER" \
+    's/            guard Date().timeIntervalSince(mtime) > Self.tombstoneQuietSeconds else { continue }/            _ = mtime/' \
+    "tomb: a fresh tombstone, maybe mid-delete by a live runner, is left alone"
+limb "a stuck tombstone is logged as removed" "$WORKER" \
+    's/            if fm.fileExists(atPath: path) {/            if false {/' \
+    "tomb: a tombstone that cannot be removed is logged as such, not as removed"
 
 echo
 echo "======================================================="

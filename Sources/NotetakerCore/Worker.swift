@@ -234,14 +234,28 @@ public final class Worker {
                 return stopOnMarker(id)
             }
         }
+        clearTombstones()
         return ExitCode.ok
     }
 
-    /// Removes tombstones a crash left mid-delete. Their takes were already transcribed.
+    /// A tombstone untouched for this long has no live deleter. A delete in progress keeps
+    /// the folder's mtime fresh as it removes the files inside.
+    static let tombstoneQuietSeconds: Double = 10 * 60
+
+    /// Removes tombstones a crash left mid-delete (their takes were already transcribed), at
+    /// the start and at the end of every drain. A fresh one is left for the runner deleting
+    /// it, and the log says what actually happened.
     func clearTombstones() {
         for name in (try? fm.contentsOfDirectory(atPath: layout.workDir)) ?? [] where name.hasPrefix(tombstonePrefix) {
-            try? fm.removeItem(atPath: layout.workDir + "/" + name)
-            log("removed a leftover tombstone \(name)")
+            let path = layout.workDir + "/" + name
+            let mtime = ((try? fm.attributesOfItem(atPath: path))?[.modificationDate] as? Date) ?? Date()
+            guard Date().timeIntervalSince(mtime) > Self.tombstoneQuietSeconds else { continue }
+            try? fm.removeItem(atPath: path)
+            if fm.fileExists(atPath: path) {
+                log("could not remove the leftover tombstone \(name). Remove it by hand: rm -rf '\(path)'")
+            } else {
+                log("removed a leftover tombstone \(name)")
+            }
         }
     }
 
