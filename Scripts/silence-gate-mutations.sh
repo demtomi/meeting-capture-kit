@@ -31,6 +31,9 @@ set -uo pipefail
 
 # The package root is the PARENT of Scripts/, and the paths below are relative to it.
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Shared classifiers (here-strings, never a pipe into grep -q) and their 2 MB control.
+. "$HERE/lib-mutations.sh"
+lib_self_test || exit 1
 cd "$HERE/.."
 PASS=1
 
@@ -257,16 +260,16 @@ mutate_swift() {
     fi
     # A build error fails for every mutation equally and says nothing about the limb, so
     # it is separated from a real red rather than scored as one.
-    if printf '%s' "$out" | grep -qE 'error: |Compiling for macOS.*error'; then
+    if contains_re 'error: |Compiling for macOS.*error' "$out"; then
         bad "$label — the mutation did not BUILD; it tested nothing"
         return
     fi
     # silence-gate-check prints "  FAIL  <label>" — TWO spaces. grep -F, so the
     # parentheses and colons in the limb names are literal.
-    if printf '%s' "$out" | grep -qF "FAIL  $expect"; then
+    if contains "FAIL  $expect" "$out"; then
         ok "$label -> \"$expect\" bit"
     else
-        bad "$label — expected \"$expect\" to fail; suite failed on: $(printf '%s' "$out" | grep '  FAIL  ' | head -3 | tr '\n' ';')"
+        bad "$label — expected \"$expect\" to fail; suite failed on: $(first_lines '  FAIL  ' "$out")"
     fi
 }
 

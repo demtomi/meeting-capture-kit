@@ -33,6 +33,9 @@ set -uo pipefail
 
 # The package root is the PARENT of Scripts/, and the paths below are relative to it.
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Shared classifiers (here-strings, never a pipe into grep -q) and their 2 MB control.
+. "$HERE/lib-mutations.sh"
+lib_self_test || exit 1
 cd "$HERE/.."
 PASS=1
 
@@ -195,16 +198,16 @@ mutate_swift() {
     # A build error fails for every mutation equally and says nothing about the limb, so
     # it is separated from a real red rather than scored as one. A regex mutation can also
     # TRAP at load (`try!` on an invalid pattern), which is a crash, not a check result.
-    if printf '%s' "$out" | grep -qE 'error: |Fatal error|Illegal instruction|Trace/BPT'; then
+    if contains_re 'error: |Fatal error|Illegal instruction|Trace/BPT' "$out"; then
         bad "$label — the mutation did not RUN clean (build error or trap); it tested nothing"
         return
     fi
     # speaker-naming-check prints "  FAIL <label>" — ONE space. grep -F, so the
     # parentheses in the limb names are literal.
-    if printf '%s' "$out" | grep -qF "FAIL $expect"; then
+    if contains "FAIL $expect" "$out"; then
         ok "$label -> \"$expect\" bit"
     else
-        bad "$label — expected \"$expect\" to fail; suite failed on: $(printf '%s' "$out" | grep '  FAIL ' | head -3 | tr '\n' ';')"
+        bad "$label — expected \"$expect\" to fail; suite failed on: $(first_lines '  FAIL ' "$out")"
     fi
 }
 

@@ -22,6 +22,9 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Shared classifiers (here-strings, never a pipe into grep -q) and their 2 MB control.
+. "$HERE/lib-mutations.sh"
+lib_self_test || exit 1
 cd "$HERE/.."
 PASS=1
 
@@ -75,11 +78,11 @@ mutate_swift() {
     # THE NAMED CASE IS MATCHED FIRST. A Swift diagnostic quotes the offending source
     # line back, so a clean run can carry the substring `error: ` in its output, and
     # testing for a build failure first scores a real bite as "did not build".
-    if printf '%s' "$out" | grep -qF "FAIL $expect"; then
+    if contains "FAIL $expect" "$out"; then
         ok "$label -> \"$expect\" bit"
         return
     fi
-    if printf '%s' "$out" | grep -qE ': error: |Fatal error|Illegal instruction|Trace/BPT'; then
+    if contains_re ': error: |Fatal error|Illegal instruction|Trace/BPT' "$out"; then
         bad "$label — the mutation did not RUN clean (build error or trap); it tested nothing"
         return
     fi
