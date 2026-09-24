@@ -262,6 +262,8 @@ public struct TestKnobs {
     public var heartbeatSeconds: Double?
     public var cooldownSeconds: Double?
     public var holdAfterClaim: String?
+    /// Install writes every file but does not call launchctl.
+    public var noLaunchctl = false
     public init() {}
 }
 
@@ -293,6 +295,7 @@ public struct RuntimeEnv {
         k.heartbeatSeconds = e["MEETING_TRANSCRIBE_TEST_HEARTBEAT_SECONDS"].flatMap(Double.init)
         k.cooldownSeconds = e["MEETING_TRANSCRIBE_TEST_COOLDOWN_SECONDS"].flatMap(Double.init)
         k.holdAfterClaim = e["MEETING_TRANSCRIBE_TEST_HOLD_AFTER_CLAIM"]
+        k.noLaunchctl = e["MEETING_TRANSCRIBE_TEST_NO_LAUNCHCTL"] != nil
         return RuntimeEnv(apiBaseOverride: e["MEETING_TRANSCRIBE_API_BASE"], testKey: e["MEETING_TRANSCRIBE_TEST_KEY"], testKnobs: k)
     }
 }

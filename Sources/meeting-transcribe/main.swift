@@ -126,6 +126,30 @@ if args.contains("--consent-upload") && !args.contains("--install-worker") {
     exit(recordConsent())
 }
 
+if args.contains("--install-worker") {
+    guard let raw = value(after: "--output-dir") ?? config.output_dir else {
+        err("usage: meeting-transcribe --install-worker --output-dir <dir>")
+        exit(ExitCode.badArguments)
+    }
+    let dir = URL(fileURLWithPath: (raw as NSString).expandingTildeInPath).standardizedFileURL.path
+    if args.contains("--consent-upload") {
+        let rc = recordConsent()
+        if rc != ExitCode.ok { exit(rc) }
+    }
+    guard Consent.state() == .valid else {
+        LaunchAgent.dryRun(outputDir: dir).forEach(say)
+        exit(ExitCode.accountStop)
+    }
+    let r = LaunchAgent.install(binary: ownPath(), outputDir: dir, loadAgent: !knobs.noLaunchctl)
+    r.lines.forEach(say)
+    exit(r.code)
+}
+if args.contains("--uninstall-worker") {
+    let r = LaunchAgent.uninstall(revokeConsent: args.contains("--revoke-consent"), unloadAgent: !knobs.noLaunchctl)
+    r.lines.forEach(say)
+    exit(r.code)
+}
+
 guard args.count == 1, !args[0].hasPrefix("-") else {
     err("unknown arguments: \(args.joined(separator: " ")). Run meeting-transcribe --help")
     exit(ExitCode.badArguments)

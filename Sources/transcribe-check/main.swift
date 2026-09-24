@@ -901,6 +901,59 @@ do {
           breaksIf: "the interactive fallback is dropped")
 }
 
+print("\n[install] THE WORKER INSTALL, WITHOUT LAUNCHD")
+do {
+    let out = freshOutputDir("install-out")
+    let noLaunch = ["MEETING_TRANSCRIBE_TEST_NO_LAUNCHCTL": "1"]
+    let homeNo = freshHome("install-noconsent", consent: .none)
+    let dry = run(["--install-worker", "--output-dir", out.path], home: homeNo, env: noLaunch)
+    let wrote = ["Library/LaunchAgents", "Library/Application Support/meeting-capture", ".config/meeting-capture"]
+        .filter { fm.fileExists(atPath: homeNo.path + "/" + $0) }
+    check("install: without consent it is a dry run that writes nothing and exits 5",
+          dry.rc == 5 && wrote.isEmpty && dry.out.contains("DRY RUN") && dry.out.contains("US endpoint"),
+          breaksIf: "installing the worker stops requiring a consent a person typed (wrote \(wrote))")
+
+    let home = freshHome("install")
+    let bin = home.path + "/Library/Application Support/meeting-capture/bin"
+    // Fake an older install, so the rollback link has something to point at.
+    try! fm.createDirectory(atPath: bin + "/0000000000000000", withIntermediateDirectories: true)
+    try! fm.createSymbolicLink(atPath: bin + "/current", withDestinationPath: bin + "/0000000000000000")
+    let ins = run(["--install-worker", "--output-dir", out.path], home: home, env: noLaunch)
+    let current = try? fm.destinationOfSymbolicLink(atPath: bin + "/current")
+    let previous = try? fm.destinationOfSymbolicLink(atPath: bin + "/previous")
+    let sha = LaunchAgent.sha256(ofFile: transcribeBin) ?? "x"
+    check("install: the binary is copied to bin/<sha>/, current points at it, previous at the old one",
+          ins.rc == 0 && current == bin + "/" + String(sha.prefix(16))
+            && LaunchAgent.sha256(ofFile: (current ?? "") + "/meeting-transcribe") == sha
+            && previous == bin + "/0000000000000000",
+          breaksIf: "the worker runs the clone's build, or an install loses the rollback target")
+    let plistPath = home.path + "/Library/LaunchAgents/\(LaunchAgent.label).plist"
+    let pl = (fm.contents(atPath: plistPath)).flatMap { try? PropertyListSerialization.propertyList(from: $0, format: nil) } as? [String: Any]
+    let progArgs = pl?["ProgramArguments"] as? [String] ?? []
+    check("install: the plist watches .work, runs every 600 s, throttles 30 s, and runs the current link",
+          (pl?["WatchPaths"] as? [String]) == [out.path + "/.work"] && pl?["StartInterval"] as? Int == 600
+            && pl?["ThrottleInterval"] as? Int == 30 && progArgs.first == bin + "/current/meeting-transcribe"
+            && progArgs.dropFirst().first == "--drain",
+          breaksIf: "the plist drifts from the spec")
+    let plText = String(decoding: fm.contents(atPath: plistPath) ?? Data(), as: UTF8.self)
+    check("install: the plist carries no EnvironmentVariables and no key",
+          pl?["EnvironmentVariables"] == nil && !plText.contains("test-key") && !plText.contains("ELEVENLABS")
+            && !plText.lowercased().contains("api_key"),
+          breaksIf: "a key or an environment block can reach the plist")
+    check("install: the label has no personal or company identity in it",
+          LaunchAgent.label == "io.github.meeting-capture.transcribe-worker",
+          breaksIf: "the label changes")
+    let un = run(["--uninstall-worker"], home: home, env: noLaunch)
+    check("uninstall: removes the plist, keeps consent unless asked, and says so",
+          un.rc == 0 && !fm.fileExists(atPath: plistPath) && fm.fileExists(atPath: home.path + "/.config/meeting-capture/consent")
+            && un.out.contains("consent kept"),
+          breaksIf: "uninstall silently revokes consent, or leaves the agent behind")
+    let un2 = run(["--uninstall-worker", "--revoke-consent"], home: home, env: noLaunch)
+    check("uninstall --revoke-consent also removes consent, and a second uninstall is harmless",
+          un2.rc == 0 && !fm.fileExists(atPath: home.path + "/.config/meeting-capture/consent"),
+          breaksIf: "uninstall is not idempotent or ignores --revoke-consent")
+}
+
 // ------------------------------------------------------------------ override refusal
 print("\n[override] THE TEST BASE URL IS LOOPBACK ONLY")
 do {
