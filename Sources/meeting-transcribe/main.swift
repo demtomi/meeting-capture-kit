@@ -25,7 +25,9 @@ USAGE
   meeting-transcribe --install-worker --output-dir <dir>
                                             Install the background worker (needs consent).
   meeting-transcribe --uninstall-worker [--revoke-consent]
-  meeting-transcribe --doctor [--live]      Check the setup. --live spends credits.
+  meeting-transcribe --doctor [--live] [--output-dir <dir>] [--no-capture-probe]
+                                            Check the setup. --live spends credits.
+                                            --no-capture-probe skips the 3 s test recording.
 
 <dir> defaults to the output_dir in ~/.config/meeting-capture/config.json.
 
@@ -124,6 +126,16 @@ func recordConsent() -> Int32 {
 
 if args.contains("--consent-upload") && !args.contains("--install-worker") {
     exit(recordConsent())
+}
+
+if args.contains("--key-probe") {
+    guard let f = value(after: "--key-probe") else { exit(ExitCode.badArguments) }
+    exit(Doctor.keyProbe(resultFile: f))
+}
+if args.contains("--doctor") {
+    let dir = (value(after: "--output-dir") ?? config.output_dir).map { ($0 as NSString).expandingTildeInPath }
+    let d = Doctor(ownBinary: ownPath(), outputDir: dir, env: env, captureProbe: !args.contains("--no-capture-probe"))
+    exit(d.run(live: args.contains("--live")))
 }
 
 if args.contains("--install-worker") {

@@ -954,6 +954,34 @@ do {
           breaksIf: "uninstall is not idempotent or ignores --revoke-consent")
 }
 
+print("\n[doctor] DOCTOR, WITHOUT LAUNCHD OR A MICROPHONE")
+do {
+    let out = freshOutputDir("doctor-out")
+    let quiet = ["MEETING_TRANSCRIBE_TEST_NO_LAUNCHCTL": "1"]
+    let home = freshHome("doctor")
+    stub.userResponse = StubResponse(status: 200, body: "{}")
+    let ok = run(["--doctor", "--output-dir", out.path, "--no-capture-probe"], home: home, env: quiet)
+    check("doctor: with consent, a key and a writable dir, every line is PASS or WARN and it exits 0",
+          ok.rc == 0 && !ok.out.contains("FAIL  ") && ok.out.contains("PASS  key accepted: GET /v1/user 200")
+            && ok.out.contains("WARN  capture: probe skipped"),
+          breaksIf: "doctor fails a healthy setup, or reports a skipped probe as a pass")
+    stub.userResponse = StubResponse(status: 401, body: #"{"detail":{"status":"missing_permissions","message":"needs user_read"}}"#)
+    let restricted = run(["--doctor", "--output-dir", out.path, "--no-capture-probe"], home: home, env: quiet)
+    check("doctor: a speech-to-text-only key refused by /v1/user is accepted-restricted, not a FAIL",
+          restricted.rc == 0 && restricted.out.contains("PASS  key accepted-restricted"),
+          breaksIf: "a least-privilege key fails doctor")
+    stub.userResponse = StubResponse(status: 401, body: #"{"detail":{"status":"invalid_api_key"}}"#)
+    let bad = run(["--doctor", "--output-dir", out.path, "--no-capture-probe"], home: home, env: quiet)
+    check("doctor: a rejected key is a FAIL line and a non-zero exit",
+          bad.rc != 0 && bad.out.contains("FAIL  key accepted: GET /v1/user HTTP 401"),
+          breaksIf: "doctor passes a key the provider rejects")
+    stub.userResponse = StubResponse(status: 200, body: "{}")
+    let nocon = run(["--doctor", "--output-dir", out.path, "--no-capture-probe"], home: freshHome("doctor-nc", consent: .none), env: quiet)
+    check("doctor: no consent is a FAIL that names the HUMAN step",
+          nocon.rc != 0 && nocon.out.contains("FAIL  consent: none. HUMAN: run in a terminal: meeting-transcribe --consent-upload"),
+          breaksIf: "doctor stops checking consent")
+}
+
 // ------------------------------------------------------------------ override refusal
 print("\n[override] THE TEST BASE URL IS LOOPBACK ONLY")
 do {
