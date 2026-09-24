@@ -12,6 +12,7 @@
 import Foundation
 import CaptureIO
 import SilenceGate
+import NotetakerCore
 
 extension String {
     var expandingTildeInPath: String { (self as NSString).expandingTildeInPath }
@@ -121,18 +122,6 @@ do {
         FileHandle.standardError.write("unknown argument: \(arg)\nRun meeting-capture --help for the accepted options.\n".data(using: .utf8)!)
         exit(2)
     }
-}
-
-// Efficiency-core count (Apple Silicon perflevel1). Used to cap the engine's
-// intra-op threads when it runs under background QoS. Falls back to half the
-// logical cores on hardware without perf levels.
-func efficiencyCoreCount() -> Int {
-    var n: Int32 = 0
-    var size = MemoryLayout<Int32>.size
-    if sysctlbyname("hw.perflevel1.logicalcpu", &n, &size, nil, 0) == 0, n > 0 {
-        return Int(n)
-    }
-    return max(2, ProcessInfo.processInfo.activeProcessorCount / 2)
 }
 
 let label = argVal("--label") ?? ""
@@ -501,56 +490,7 @@ guard let transcriber else {
     FileHandle.standardError.write("[meeting-capture] done. Audio and manifest are in \(workDir)\n  Pass --transcriber <executable> to run a transcription step automatically.\n".data(using: .utf8)!)
     exit(0)
 }
-guard FileManager.default.isExecutableFile(atPath: transcriber) else {
-    FileHandle.standardError.write("--transcriber is not an executable file: \(transcriber)\n".data(using: .utf8)!)
-    exit(1)
-}
-let proc = Process()
-proc.currentDirectoryURL = URL(fileURLWithPath: outputDir)
-// A transcription tool commonly shells out to `ffmpeg`. When this CLI is launched
-// from a GUI app the inherited PATH is minimal and Homebrew is not on it, so the
-// child fails to find its own dependencies. Prepend the common prefixes so the
-// handoff behaves the same from a terminal and from an app bundle.
-var childEnv = ProcessInfo.processInfo.environment
-let basePath = childEnv["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-childEnv["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + basePath
-
-// Transcription is CPU-heavy and, unthrottled, pins one worker per performance
-// core, so it fights whatever is in the foreground. Two throttles, both opt-out:
-//   1. Background QoS via `taskpolicy -b` (PRIO_DARWIN_BG, inherited by every
-//      child thread), so the OS schedules it on efficiency cores and lets
-//      foreground work preempt it.
-//   2. OMP_NUM_THREADS capped to the efficiency-core count, so it does not
-//      oversubscribe the cores it has been confined to.
-// `--foreground` opts out of both, for an unattended machine.
-let taskpolicy = "/usr/sbin/taskpolicy"
-let throttle = !hasFlag("--foreground")
-    && FileManager.default.isExecutableFile(atPath: taskpolicy)
-if throttle {
-    let threads = efficiencyCoreCount()
-    childEnv["OMP_NUM_THREADS"] = String(threads)
-    proc.executableURL = URL(fileURLWithPath: taskpolicy)
-    proc.arguments = ["-b", transcriber, manifestPath]
-    FileHandle.standardError.write("[meeting-capture] running \(transcriber) under background QoS (taskpolicy -b, \(threads) threads) ...\n".data(using: .utf8)!)
-} else {
-    proc.executableURL = URL(fileURLWithPath: transcriber)
-    proc.arguments = [manifestPath]
-    FileHandle.standardError.write("[meeting-capture] running \(transcriber) ...\n".data(using: .utf8)!)
-}
-proc.environment = childEnv
-do {
-    try proc.run()
-    proc.waitUntilExit()
-    let status = proc.terminationStatus
-    // Data minimisation: once the transcriber has succeeded, the raw capture audio
-    // is no longer needed, so the workdir (both WAVs plus the manifest) is deleted.
-    // On failure it is kept so the step can be retried against the same audio.
-    // `--keep-audio`, or MEETING_CAPTURE_KEEP_AUDIO in the environment, opts out.
-    if status == 0 && !keepAudio {
-        try? FileManager.default.removeItem(atPath: workDir)
-    }
-    exit(status)
-} catch {
-    FileHandle.standardError.write("transcriber launch failed: \(error)\n".data(using: .utf8)!)
-    exit(1)
-}
+// The handoff itself lives in NotetakerCore so a check can drive it without a device.
+exit(runTranscriberHandoff(workDir: workDir, manifestPath: manifestPath, transcriber: transcriber,
+                           outputDir: outputDir, keepAudio: keepAudio,
+                           foreground: hasFlag("--foreground")))

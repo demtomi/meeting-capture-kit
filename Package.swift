@@ -24,6 +24,7 @@ let package = Package(
         .library(name: "SpeakerNaming", targets: ["SpeakerNaming"]),
         .library(name: "MeetingPresence", targets: ["MeetingPresence"]),
         .library(name: "CaptureIO", targets: ["CaptureIO"]),
+        .library(name: "NotetakerCore", targets: ["NotetakerCore"]),
         .executable(name: "meeting-capture", targets: ["MeetingCaptureCLI"]),
     ],
     targets: [
@@ -40,8 +41,16 @@ let package = Package(
         .target(name: "CaptureIO", path: "Sources/CaptureIO"),
         .executableTarget(
             name: "MeetingCaptureCLI",
-            dependencies: ["CaptureIO", "SilenceGate"],
+            dependencies: ["CaptureIO", "SilenceGate", "NotetakerCore"],
             path: "Sources/MeetingCaptureCLI",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // The transcriber side: the capture CLI's handoff and delete rule, plus everything
+        // `meeting-transcribe` needs. Its own library so a check can drive the delete rule
+        // with no audio device.
+        .target(
+            name: "NotetakerCore",
+            path: "Sources/NotetakerCore",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // Pure transcript speaker-relabeling. Its own library so it is verifiable
@@ -94,6 +103,14 @@ let package = Package(
             path: "Sources/audio-pipeline-check",
             // Same reason as the capture CLI: straight-line top-level script code that
             // Swift 6 strict concurrency reads as actor-isolated mutation.
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // Needs the network stack for its loopback stub server, and nothing else. It never
+        // reaches a non-loopback host.
+        .executableTarget(
+            name: "transcribe-check",
+            dependencies: ["NotetakerCore"],
+            path: "Sources/transcribe-check",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
