@@ -176,7 +176,7 @@ limb "429 is not backed off" "$CLIENT" \
     "c row 429 x4 backs off 3 times then exit 1 -> exit 1"
 limb "the resource timeout is a fixed value" "$CLIENT" \
     's/    public static func resourceTimeout(audioSeconds: Double) -> Double { 900 + 0.5 \* audioSeconds }/    public static func resourceTimeout(audioSeconds: Double) -> Double { 60 }/' \
-    "c timeouts: 300 s idle, and 900 s plus half the audio in total"
+    "c timeouts: 900 s plus half the audio in total, and 30/60/120 s backoff"
 
 # ======================================================================== the worker
 echo
@@ -256,6 +256,9 @@ limb "a valued flag's argument is read as the output dir" "$MAIN" \
 limb "relative paths are resolved twice" "$HANDOFF" \
     's/    let workDir = absolute(workDir), manifestPath = absolute(manifestPath), outputDir = absolute(outputDir)/    let workDir = workDir, manifestPath = manifestPath, outputDir = outputDir/' \
     "g2 a relative output dir still hands the transcriber a manifest path that exists"
+limb "the idle timeout is a fixed 300 s" "$CLIENT" \
+    's/    public static func requestTimeout(audioSeconds: Double) -> Double { resourceTimeout(audioSeconds: audioSeconds) }/    public static func requestTimeout(audioSeconds: Double) -> Double { 300 }/' \
+    "c the idle timeout covers server processing: it is never shorter than the total timeout"
 
 echo
 echo "======================================================="

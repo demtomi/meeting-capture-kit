@@ -8,7 +8,8 @@
 //   5xx, network error, timeout, other    -> exit 1, retry later
 //
 // Timeouts come from the audio duration, never the 60 s default, so a slow response to a
-// long take is waited for rather than uploaded (and billed) again.
+// long take is waited for rather than uploaded (and billed) again. Both the idle and the
+// total timeout are 900 s plus half the audio duration.
 import Foundation
 
 public enum ScribeOutcome: Equatable {
@@ -66,8 +67,12 @@ public struct ScribeRequest {
 
 public final class ScribeClient {
     public static let model = "scribe_v2"
-    public static let idleTimeout: Double = 300
     public static func resourceTimeout(audioSeconds: Double) -> Double { 900 + 0.5 * audioSeconds }
+    /// URLSession's idle timeout: the longest gap with no bytes moving. After the upload no
+    /// bytes move at all while the provider transcribes, so this equals the total timeout,
+    /// 900 s plus half the audio (a 1 h track: 2,700 s). A fixed 300 s fired on long takes
+    /// mid-processing and the take was uploaded and billed again.
+    public static func requestTimeout(audioSeconds: Double) -> Double { resourceTimeout(audioSeconds: audioSeconds) }
     public static let backoff: [Double] = [30, 60, 120]
     static let accountBodies = ["quota_exceeded", "max_character_limit_exceeded", "payment_required",
                                 "insufficient_credits", "invalid_api_key", "missing_api_key"]
@@ -127,7 +132,7 @@ public final class ScribeClient {
         req.setValue(key, forHTTPHeaderField: "xi-api-key")
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = timeoutOverride ?? Self.idleTimeout
+        cfg.timeoutIntervalForRequest = timeoutOverride ?? Self.requestTimeout(audioSeconds: r.audioSeconds)
         cfg.timeoutIntervalForResource = timeoutOverride ?? Self.resourceTimeout(audioSeconds: r.audioSeconds)
         cfg.waitsForConnectivity = false
         let session = URLSession(configuration: cfg)

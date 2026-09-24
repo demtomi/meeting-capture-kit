@@ -558,10 +558,14 @@ do {
     }
 }
 
-check("c timeouts: 300 s idle, and 900 s plus half the audio in total",
-      ScribeClient.idleTimeout == 300 && ScribeClient.resourceTimeout(audioSeconds: 3600) == 2700
-        && ScribeClient.backoff == [30, 60, 120],
+check("c timeouts: 900 s plus half the audio in total, and 30/60/120 s backoff",
+      ScribeClient.resourceTimeout(audioSeconds: 3600) == 2700 && ScribeClient.backoff == [30, 60, 120],
       breaksIf: "the timeouts fall back to a fixed value, so a slow answer about a long take is uploaded and billed again")
+// No bytes move while the provider works on an uploaded take, so the idle timeout must
+// outlast the whole processing time, not a fixed 300 s that a long take exceeds.
+check("c the idle timeout covers server processing: it is never shorter than the total timeout",
+      [60.0, 3600, 36_000].allSatisfy { ScribeClient.requestTimeout(audioSeconds: $0) >= ScribeClient.resourceTimeout(audioSeconds: $0) },
+      breaksIf: "the idle timeout fires while the provider is still processing, and the take is uploaded and billed again")
 
 print("\n[c] HOW THE WORKER TREATS EACH EXIT")
 do {
