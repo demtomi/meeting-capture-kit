@@ -170,17 +170,21 @@ public final class Worker {
             switch rc {
             case ExitCode.ok:
                 if let failure = proveTake(manifestPath: dir + "/manifest.json", outputDir: layout.root) {
-                    guard write(dir + "/" + Marker.noTranscript, "exit 0 but \(failure)") else { return stopOnMarker(id) }
+                    guard write(dir + "/" + Marker.noTranscript, "exit 0 but \(failure)") else { if takeGone(dir) { skipGone(id); continue }; return stopOnMarker(id) }
                     log("NO TRANSCRIPT \(id): the transcriber exited 0 but \(failure). Audio kept.")
                     notify("No transcript for \(label(dir)). Audio kept. See: meeting-transcribe --status")
                 } else if keepAudio || manifestKeepsAudio(dir) {
-                    guard write(dir + "/" + Marker.transcribed, "done, audio kept by keep-audio") else { return stopOnMarker(id) }
+                    guard write(dir + "/" + Marker.transcribed, "done, audio kept by keep-audio") else { if takeGone(dir) { skipGone(id); continue }; return stopOnMarker(id) }
                     try? fm.removeItem(atPath: dir + "/" + Marker.attempts)
                     log("done \(id), audio kept")
                     notify("Transcript ready: \(label(dir))")
                 } else {
                     let l = label(dir)
-                    if fm.fileExists(atPath: dir) { try? fm.removeItem(atPath: dir) }
+                    if case .heldElsewhere(let why) = removeTakeHoldingClaim(dir, log: log) {
+                        skip.insert(id)
+                        log("transcript written for \(id), but another runner holds it (\(why)). Left for that runner.")
+                        continue
+                    }
                     log("done \(id)")
                     notify("Transcript ready: \(l)")
                 }
@@ -194,23 +198,24 @@ public final class Worker {
                 log("skipped \(id): held by another runner. No attempt used.")
             case ExitCode.neverSucceeds:
                 if terminalMarker(dir) == nil {
-                    guard write(dir + "/" + Marker.refused, why) else { return stopOnMarker(id) }
+                    guard write(dir + "/" + Marker.refused, why) else { if takeGone(dir) { skipGone(id); continue }; return stopOnMarker(id) }
                 }
                 try? fm.removeItem(atPath: dir + "/" + Marker.attempts)
                 log("REFUSED \(id): \(why). Audio kept. Retry with: meeting-transcribe --requeue \(id)")
                 notify("\(label(dir)) cannot be transcribed: \(why). See: meeting-transcribe --status")
             case ExitCode.allSilent:
-                guard write(dir + "/" + Marker.silentCapture, why) else { return stopOnMarker(id) }
+                guard write(dir + "/" + Marker.silentCapture, why) else { if takeGone(dir) { skipGone(id); continue }; return stopOnMarker(id) }
                 try? fm.removeItem(atPath: dir + "/" + Marker.attempts)
                 log("SILENT \(id): every track was digital silence. Check the input device. Audio kept.")
                 notify("\(label(dir)) captured only silence. Check the input device.")
             default:
                 let count = n + 1
                 guard write(dir + "/" + Marker.attempts, "\(count) \(Int(Date().timeIntervalSince1970))") else {
+                    if takeGone(dir) { skipGone(id); continue }
                     return stopOnMarker(id)
                 }
                 if count >= Self.maxAttempts {
-                    guard write(dir + "/" + Marker.uploadFailed, why) else { return stopOnMarker(id) }
+                    guard write(dir + "/" + Marker.uploadFailed, why) else { if takeGone(dir) { skipGone(id); continue }; return stopOnMarker(id) }
                     try? fm.removeItem(atPath: dir + "/" + Marker.attempts)
                     log("FAILED \(id) after \(count) attempts (\(why)). Audio kept. Retry with: meeting-transcribe --requeue \(id)")
                     notify("Transcription failed for \(label(dir)). Retry with meeting-transcribe --requeue \(id)")
@@ -224,6 +229,10 @@ public final class Worker {
 
     /// A marker that cannot be written means the next pass would pick the same take and
     /// upload it again. Stop instead.
+    /// Another deleter removed the take while this drain ran. Nothing to mark, nothing to redo.
+    func takeGone(_ dir: String) -> Bool { !fm.fileExists(atPath: dir) }
+    func skipGone(_ id: String) { log("take \(id) is gone (removed by another runner). Skipping it.") }
+
     func stopOnMarker(_ id: String) -> Int32 {
         log("cannot write a marker for \(id). Stopping so it is not uploaded again in a loop.")
         return ExitCode.transient

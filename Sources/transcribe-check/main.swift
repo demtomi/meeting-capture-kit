@@ -779,6 +779,37 @@ do {
           breaksIf: "the synchronous deleter ignores the take's own keep decision")
 }
 
+print("\n[del] A DELETER HOLDS THE CLAIM, AND A VANISHED TAKE IS SKIPPED")
+do {
+    let liveClaim = "\(getpid()) someone-elses-token\n"   // this check's PID: alive, fresh mtime
+    let home = freshHome("del")
+
+    let out = freshOutputDir("del-handoff")
+    let t = makeTake(in: out)
+    let proofThenClaimed = stubTranscriber("del-proof-claimed", writeProofShell + "\nprintf '\(liveClaim)' > \"$(dirname \"$1\")/.claim\"\nexit 0")
+    _ = runTranscriberHandoff(workDir: t.workDir.path, manifestPath: t.manifest.path, transcriber: proofThenClaimed,
+                              outputDir: out.path, keepAudio: false, foreground: true)
+    check("del: the capture CLI does not delete a proven take while another live runner holds its claim",
+          exists(t.workDir, "mic.wav"),
+          breaksIf: "the capture CLI removes .work/<id> under a runner that is still working on it")
+
+    let out2 = freshOutputDir("del-worker")
+    let t2 = makeTake(in: out2)
+    _ = run(["--drain", out2.path, "--transcriber", proofThenClaimed], home: home)
+    check("del: the worker does not delete a proven take while another live runner holds its claim",
+          exists(t2.workDir, "mic.wav"),
+          breaksIf: "the worker removes .work/<id> under a runner that is still working on it")
+
+    let out3 = freshOutputDir("del-vanished")
+    let gone = makeTake(in: out3, id: "2026-01-02T03-04-05Z-0gon")
+    let next = makeTake(in: out3, id: "2026-01-02T03-04-06Z-0nxt")
+    let vanishes = stubTranscriber("del-vanish", "case \"$1\" in *0gon*) rm -rf \"$(dirname \"$1\")\"; exit 1;; esac\n" + writeProofShell + "\nexit 0")
+    let r3 = run(["--drain", out3.path, "--transcriber", vanishes], home: home)
+    check("del: a take whose dir vanished mid-drain is skipped and the drain carries on",
+          r3.rc == 0 && !exists(gone.workDir) && transcriptOf(next) != nil && !exists(next.workDir),
+          breaksIf: "a marker write into a removed take aborts the whole drain (rc \(r3.rc))")
+}
+
 // ------------------------------------------------------------------ [d] two runners
 print("\n[d] TWO RUNNERS ON ONE TAKE UPLOAD IT ONCE")
 do {

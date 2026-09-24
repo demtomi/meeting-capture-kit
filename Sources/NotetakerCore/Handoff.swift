@@ -80,7 +80,9 @@ public func runTranscriberHandoff(workDir: String, manifestPath: String, transcr
             ? proveTake(manifestPath: manifestPath, outputDir: outputDir) : nil
         let proofPasses = proof == nil
         if status == 0 && !keepAudio && proofPasses {
-            try? FileManager.default.removeItem(atPath: workDir)
+            if case .heldElsewhere(let why) = removeTakeHoldingClaim(workDir) {
+                err("[meeting-capture] the transcript is written, but another runner holds this take (\(why)), so it is left for that runner to finish\n")
+            }
         } else if let proof {
             err("[meeting-capture] the transcriber exited 0 but \(proof), so the audio is kept in \(workDir)\n")
         }

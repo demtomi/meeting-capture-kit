@@ -127,3 +127,24 @@ public final class TakeClaim {
         if stillMine() { unlink(path) }
     }
 }
+
+public enum TakeRemoval: Equatable {
+    case removed
+    case alreadyGone
+    case heldElsewhere(String)
+}
+
+/// Removes a take's folder only while holding its claim, so no deleter can pull a take out
+/// from under a runner that is still working on it. A folder already gone is success.
+public func removeTakeHoldingClaim(_ takeDir: String, log: (String) -> Void = { _ in }) -> TakeRemoval {
+    guard FileManager.default.fileExists(atPath: takeDir) else { return .alreadyGone }
+    switch TakeClaim.acquire(takeDir: takeDir, log: log) {
+    case .held:
+        try? FileManager.default.removeItem(atPath: takeDir)
+        return FileManager.default.fileExists(atPath: takeDir) ? .heldElsewhere("could not remove it") : .removed
+    case .heldElsewhere(let why):
+        return .heldElsewhere(why)
+    case .failed(let why):
+        return FileManager.default.fileExists(atPath: takeDir) ? .heldElsewhere(why) : .alreadyGone
+    }
+}

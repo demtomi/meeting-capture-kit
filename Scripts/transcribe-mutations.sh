@@ -278,6 +278,15 @@ limb "a dead holder's claim waits out the stale age" "$CLAIM" \
 limb "takeover is not serialised" "$CLAIM" \
     's/            guard le == 0 else { return .heldElsewhere("another runner is taking over this claim") }/            guard true else { return .heldElsewhere("another runner is taking over this claim") }/' \
     "claim: two takers of one stale claim, interleaved, leave exactly one holder"
+limb "the capture CLI deletes without the claim" "$HANDOFF" \
+    's/            if case .heldElsewhere(let why) = removeTakeHoldingClaim(workDir) {/            try? FileManager.default.removeItem(atPath: workDir); if case .heldElsewhere(let why) = TakeRemoval.removed {/' \
+    "del: the capture CLI does not delete a proven take while another live runner holds its claim"
+limb "the worker deletes without the claim" "$WORKER" \
+    's/                    if case .heldElsewhere(let why) = removeTakeHoldingClaim(dir, log: log) {/                    try? fm.removeItem(atPath: dir); if case .heldElsewhere(let why) = TakeRemoval.removed {/' \
+    "del: the worker does not delete a proven take while another live runner holds its claim"
+limb "a vanished take aborts the drain" "$WORKER" \
+    's/    func takeGone(_ dir: String) -> Bool { !fm.fileExists(atPath: dir) }/    func takeGone(_ dir: String) -> Bool { false }/' \
+    "del: a take whose dir vanished mid-drain is skipped and the drain carries on"
 
 echo
 echo "======================================================="
