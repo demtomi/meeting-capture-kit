@@ -5,7 +5,7 @@
 // `.work/<id>/.claim` is created with O_EXCL and holds the holder's PID and a random
 // token. The holder refreshes its mtime every 30 s. A claim is stale, and may be taken
 // over, when its mtime is more than 30 minutes old or when its holder PID no longer exists
-// (a bootout or a crash). Takeover is serialised by an O_EXCL `<claim>.takeover` lock and
+// (a bootout or a crash). Takeover is serialised by an flock() on `<claim>.takeover` and
 // finishes with a rename, so exactly one taker comes out holding the claim.
 //
 // Sleep and SIGSTOP freeze the heartbeat, so a frozen holder can lose its claim to a new
@@ -49,14 +49,12 @@ public final class TakeClaim {
         return kill(pid, 0) != 0 && errno == ESRCH
     }
 
-    /// A takeover lock older than this is itself stale. A takeover takes milliseconds.
-    static let takeoverLockStaleSeconds: Double = 60
-
     /// The same protocol on any path. The queue worker uses it for its drain lock.
     /// `beforeReplace` is a test seam: it runs at the moment this taker is about to replace
     /// a stale claim, so a check can put a second taker exactly there.
     public static func acquire(path: String, stale: Double = staleSeconds, log: (String) -> Void,
-                               beforeReplace: (() -> Void)? = nil) -> Acquire {
+                               beforeReplace: (() -> Void)? = nil,
+                               beforeTakingLock: (() -> Void)? = nil) -> Acquire {
         let token = UUID().uuidString
         var e = create(path, token: token)
         if e == EEXIST {
@@ -74,15 +72,17 @@ public final class TakeClaim {
                 return .heldElsewhere("claimed by pid \(holder), heartbeat \(Int(age)) s ago")
             }
             // One taker at a time. Without this, stat-unlink-create lets two takers of one
-            // stale claim both come out holding it.
-            let lock = path + ".takeover"
-            var le = create(lock, token: token)
-            if le == EEXIST, let l = try? String(contentsOfFile: lock, encoding: .utf8) {
-                let lage = Date().timeIntervalSince(((try? FileManager.default.attributesOfItem(atPath: lock))?[.modificationDate] as? Date) ?? Date())
-                if lage > takeoverLockStaleSeconds || holderIsDead(l) { unlink(lock); le = create(lock, token: token) }
+            // stale claim both come out holding it. The takeover lock is an flock() on
+            // <claim>.takeover: only the process holding the open file holds it, the kernel
+            // drops it when that process dies (so there is no stale lock to recover, and no
+            // unlink-then-create to race), and closing our file cannot release anyone else's.
+            beforeTakingLock?()
+            let lockFD = open(path + ".takeover", O_CREAT | O_RDWR, 0o644)
+            guard lockFD >= 0 else { return .failed("cannot open \(path).takeover: \(String(cString: strerror(errno)))") }
+            defer { close(lockFD) }
+            guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {
+                return .heldElsewhere("another runner is taking over this claim")
             }
-            guard le == 0 else { return .heldElsewhere("another runner is taking over this claim") }
-            defer { unlink(lock) }
             // Still the claim we judged stale? Someone may have finished a takeover already.
             guard (try? String(contentsOfFile: path, encoding: .utf8)) == seen else {
                 return .heldElsewhere("the claim changed while this runner was taking it over")

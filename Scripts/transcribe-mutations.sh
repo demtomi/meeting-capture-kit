@@ -276,8 +276,11 @@ limb "a dead holder's claim waits out the stale age" "$CLAIM" \
     's/            let dead = holderIsDead(seen)/            let dead = false/' \
     "claim: a fresh claim whose holder PID is dead is taken over at once"
 limb "takeover is not serialised" "$CLAIM" \
-    's/            guard le == 0 else { return .heldElsewhere("another runner is taking over this claim") }/            guard true else { return .heldElsewhere("another runner is taking over this claim") }/' \
+    's/            guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {/            guard true else {/' \
     "claim: two takers of one stale claim, interleaved, leave exactly one holder"
+limb "the takeover lock does not exclude a second taker" "$CLAIM" \
+    's/            guard flock(lockFD, LOCK_EX | LOCK_NB) == 0 else {/            guard true else {/' \
+    "claim: two takers racing for a stale takeover lock leave exactly one claim holder"
 limb "the capture CLI deletes without the claim" "$HANDOFF" \
     's/            if case .heldElsewhere(let why) = removeTakeHoldingClaim(workDir) {/            try? FileManager.default.removeItem(atPath: workDir); if case .heldElsewhere(let why) = TakeRemoval.removed {/' \
     "del: the capture CLI does not delete a proven take while another live runner holds its claim"

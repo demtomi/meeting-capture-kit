@@ -1029,6 +1029,41 @@ do {
           [holds(first), holds(second)].filter { $0 }.count == 1,
           breaksIf: "takeover is stat-unlink-create, so both takers believe they hold the claim (first \(holds(first)), second \(holds(second)))")
 
+    // The takeover LOCK has the same race one level up. Two takers find a stale claim AND a
+    // takeover lock left by a dead process. A pauses just before taking the lock, B takes it
+    // and reaches the claim replacement, then A resumes. Exactly one may come out holding.
+    let dir2 = freshOutputDir("takeover-lock-race")
+    let path2 = dir2.path + "/.claim"
+    try! "\(getpid()) old-token\n".write(toFile: path2, atomically: true, encoding: .utf8)
+    utimes(path2, [timeval(tv_sec: 1, tv_usec: 0), timeval(tv_sec: 1, tv_usec: 0)])
+    let deadHolder: Int32 = {
+        let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+        try! p.run(); p.waitUntilExit(); return p.processIdentifier
+    }()
+    try! "\(deadHolder) crashed-taker\n".write(toFile: path2 + ".takeover", atomically: true, encoding: .utf8)
+    let aAtLock = DispatchSemaphore(value: 0), bInside = DispatchSemaphore(value: 0), aDone = DispatchSemaphore(value: 0)
+    let bothDone = DispatchGroup()
+    var resultA: TakeClaim.Acquire?, resultB: TakeClaim.Acquire?
+    bothDone.enter()
+    Thread.detachNewThread {
+        resultA = TakeClaim.acquire(path: path2, stale: 60, log: { _ in }, beforeTakingLock: {
+            aAtLock.signal(); _ = bInside.wait(timeout: .now() + 5)
+        })
+        aDone.signal(); bothDone.leave()
+    }
+    bothDone.enter()
+    Thread.detachNewThread {
+        _ = aAtLock.wait(timeout: .now() + 3)
+        resultB = TakeClaim.acquire(path: path2, stale: 60, log: { _ in }, beforeReplace: {
+            bInside.signal(); _ = aDone.wait(timeout: .now() + 5)
+        })
+        bothDone.leave()
+    }
+    _ = bothDone.wait(timeout: .now() + 20)
+    check("claim: two takers racing for a stale takeover lock leave exactly one claim holder",
+          [holds(resultA), holds(resultB)].filter { $0 }.count == 1,
+          breaksIf: "takeover-lock recovery is unlink-then-create with an unowned release, so both takers hold the claim (A \(holds(resultA)), B \(holds(resultB)))")
+
     stub.reset()
     let homeP = freshHome("claim-race-proc")
     let tp = makeTake(in: freshOutputDir("claim-race-proc"))
