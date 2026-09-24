@@ -3,8 +3,10 @@ name: CI
 # Builds the package and runs every verification executable.
 #
 # There are no secrets and no network access in this workflow. Every check runs
-# with no microphone grant, no screen-recording grant, no display and no socket,
-# which is the whole reason the suite can run on a hosted runner at all.
+# with no microphone grant, no screen-recording grant and no display, which is the
+# whole reason the suite can run on a hosted runner at all. The one socket is
+# transcribe-check's stub server on 127.0.0.1, and the transcriber refuses any API
+# base that is not a loopback host, so no key and no audio can leave the runner.
 #
 # ---------------------------------------------------------------------------
 # RUNNER macOS VERSION
@@ -27,7 +29,7 @@ name: CI
 # The floor was 26.0 until it was measured. That was the development machine's
 # version rather than a requirement, and it locked out every Mac more than two
 # releases old. Raising it again needs the same treatment: build at the new
-# floor and run all six checks before changing the number.
+# floor and run all seven checks before changing the number.
 # ---------------------------------------------------------------------------
 
 on:
@@ -71,7 +73,7 @@ jobs:
         # `silence-gate-check` also exits 2 when its fixture is missing or empty,
         # so a run that verified nothing cannot read as a pass. Any non-zero code
         # fails the job.
-        # The loop runs all six so one failure does not hide the others.
+        # The loop runs all seven so one failure does not hide the others.
         run: |
           set -u
           BIN="$(swift build --show-bin-path)"
@@ -82,7 +84,8 @@ jobs:
             speaker-naming-check \
             screen-record-check \
             meeting-presence-check \
-            live-audio-check
+            live-audio-check \
+            transcribe-check
           do
             echo "::group::$check"
             if "$BIN/$check"; then
@@ -119,7 +122,7 @@ jobs:
         run: |
           set -u
           FAILED=""
-          for s in captureio screen-record speaker-naming meeting-presence silence-gate
+          for s in captureio screen-record speaker-naming meeting-presence silence-gate transcribe
           do
             echo "::group::$s-mutations"
             if bash "Scripts/$s-mutations.sh"; then

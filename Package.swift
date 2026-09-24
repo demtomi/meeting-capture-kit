@@ -3,16 +3,17 @@ import PackageDescription
 
 // MeetingCaptureKit — dual-track meeting audio capture on macOS.
 //
-// Six library/CLI targets and six runnable verification executables. Every check
-// runs with no microphone grant, no screen-recording grant, no display and no
-// network, which is what lets the whole suite run on a CI runner.
+// Seven library targets, two CLIs and seven runnable verification executables. Every
+// check runs with no microphone grant, no screen-recording grant, no display and no
+// network, which is what lets the whole suite run on a CI runner. transcribe-check's
+// only socket is a stub server on 127.0.0.1.
 let package = Package(
     name: "MeetingCaptureKit",
     // 14.2 is the floor set by `AudioHardwareCreateProcessTap`, which the system-audio
     // path needs. It was 26.0, which was the development machine's version rather than a
     // measured requirement, and it locked out every Mac more than two releases old.
     //
-    // VERIFIED: the package builds clean and all six verification executables exit 0 at
+    // VERIFIED: the package builds clean and all seven verification executables exit 0 at
     // this deployment target. NOT VERIFIED: that the process tap behaves correctly at
     // RUNTIME on 14.2. That was compiled on macOS 26 and never run on 14.x. The pure
     // logic targets carry no such doubt, since they touch no system audio at all.
