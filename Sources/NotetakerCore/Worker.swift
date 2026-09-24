@@ -187,10 +187,16 @@ public final class Worker {
                     notify("Transcript ready: \(label(dir))")
                 } else {
                     let l = label(dir)
-                    if case .heldElsewhere(let why) = removeTakeHoldingClaim(dir, log: log) {
+                    switch removeTakeHoldingClaim(dir, log: log) {
+                    case .heldElsewhere(let why):
                         skip.insert(id)
                         log("transcript written for \(id), but another runner holds it (\(why)). Left for that runner.")
                         continue
+                    case .failed(let why):
+                        skip.insert(id)
+                        log("transcript written for \(id), but its audio could not be removed: \(why). It is not transcribed again. Remove it by hand: rm -rf '\(dir)'")
+                        continue
+                    case .removed, .alreadyGone: break
                     }
                     log("done \(id)")
                     notify("Transcript ready: \(l)")

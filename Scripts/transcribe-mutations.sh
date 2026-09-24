@@ -270,10 +270,10 @@ limb "the takeover flock is taken on a different file than a live holder's" "$CL
     's/            let lockFD = open(path + ".takeover", /            let lockFD = open(path + ".takeover2", /' \
     "claim: a live process holding the takeover flock excludes a taker, and its death releases it"
 limb "the capture CLI deletes without the claim" "$HANDOFF" \
-    's/            if case .heldElsewhere(let why) = removeTakeHoldingClaim(workDir) {/            try? FileManager.default.removeItem(atPath: workDir); if case .heldElsewhere(let why) = TakeRemoval.removed {/' \
+    's/            switch removeTakeHoldingClaim(workDir) {/            try? FileManager.default.removeItem(atPath: workDir); switch TakeRemoval.removed {/' \
     "del: the capture CLI does not delete a proven take while another live runner holds its claim"
 limb "the worker deletes without the claim" "$WORKER" \
-    's/                    if case .heldElsewhere(let why) = removeTakeHoldingClaim(dir, log: log) {/                    try? fm.removeItem(atPath: dir); if case .heldElsewhere(let why) = TakeRemoval.removed {/' \
+    's/                    switch removeTakeHoldingClaim(dir, log: log) {/                    try? fm.removeItem(atPath: dir); switch TakeRemoval.removed {/' \
     "del: the worker does not delete a proven take while another live runner holds its claim"
 limb "a vanished take aborts the drain" "$WORKER" \
     's/    func takeGone(_ dir: String) -> Bool { !fm.fileExists(atPath: dir) }/    func takeGone(_ dir: String) -> Bool { false }/' \
@@ -341,6 +341,9 @@ limb "a fresh tombstone is cleared under a live deleter" "$WORKER" \
 limb "a stuck tombstone is logged as removed" "$WORKER" \
     's/            if fm.fileExists(atPath: path) {/            if false {/' \
     "tomb: a tombstone that cannot be removed is logged as such, not as removed"
+limb "a rename failure is blamed on another runner" "$CLAIM" \
+    's/            return .failed("could not move it out of the queue: \\(String(cString: strerror(e)))")/            return .heldElsewhere("another runner holds it")/' \
+    "tomb: a take that cannot be moved out reports the real error and is not re-run"
 
 echo
 echo "======================================================="

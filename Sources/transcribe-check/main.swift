@@ -981,6 +981,20 @@ do {
     check("tomb: a tombstone that cannot be removed is logged as such, not as removed",
           exists(stuck) && r4.out.contains("could not remove") && !r4.out.contains("removed a leftover tombstone"),
           breaksIf: "the log says a tombstone was removed when it is still on disk")
+
+    // A proven take whose folder cannot be moved out of the queue: the real error is reported,
+    // it is not blamed on another runner, and the take is not transcribed again.
+    let out5 = freshOutputDir("tomb-cannot-move")
+    let t5 = makeTake(in: out5)
+    let lockWork = stubTranscriber("tomb-lock-work", writeProofShell + "\nchmod 555 \"$(dirname \"$(dirname \"$1\")\")\"\nexit 0")
+    let count5 = loggingTranscriber("tomb-cannot-move-again", "exit 0")
+    let r5 = run(["--drain", out5.path, "--transcriber", lockWork], home: home)
+    _ = run(["--drain", out5.path, "--transcriber", count5.path], home: home)
+    chmod(out5.path + "/.work", 0o755)
+    check("tomb: a take that cannot be moved out reports the real error and is not re-run",
+          exists(t5.workDir, "mic.wav") && r5.out.contains("Permission denied") && !r5.out.contains("another runner holds it")
+            && count5.calls() == 0,
+          breaksIf: "a rename failure is reported as another runner, with errno read after the release clobbered it")
 }
 
 // ------------------------------------------------------------------ [d] two runners

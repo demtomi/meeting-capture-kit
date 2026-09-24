@@ -135,6 +135,8 @@ public enum TakeRemoval: Equatable {
     case removed
     case alreadyGone
     case heldElsewhere(String)
+    /// We held the claim and still could not remove it (for example a read-only folder).
+    case failed(String)
 }
 
 /// Removes a take's folder only while holding its claim, so no deleter can pull a take out
@@ -152,8 +154,9 @@ public func removeTakeHoldingClaim(_ takeDir: String, log: (String) -> Void = { 
         let tomb = ((takeDir as NSString).deletingLastPathComponent as NSString)
             .appendingPathComponent(".deleting-\((takeDir as NSString).lastPathComponent)-\(claim.token)")
         guard rename(takeDir, tomb) == 0 else {
+            let e = errno                       // read now: release() may overwrite it
             claim.release()
-            return .heldElsewhere("could not move it out of the queue: \(String(cString: strerror(errno)))")
+            return .failed("could not move it out of the queue: \(String(cString: strerror(e)))")
         }
         beforeRecursiveDelete?()
         try? FileManager.default.removeItem(atPath: tomb)
