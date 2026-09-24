@@ -61,3 +61,32 @@ public struct OutputLayout {
     public var drainLock: String { stateDir + "/drain.lock" }
     public func take(_ id: String) -> String { workDir + "/" + id }
 }
+
+/// Non-secret settings, written by `--install-worker`. Never holds a key.
+public struct WorkerConfig: Codable, Equatable {
+    public var output_dir: String?
+    public var transcriber: String?
+    public var keep_audio: Bool?
+    /// Takes longer than this are refused before any upload. Default 4 h.
+    public var max_take_seconds: Double?
+
+    public init(output_dir: String? = nil, transcriber: String? = nil, keep_audio: Bool? = nil, max_take_seconds: Double? = nil) {
+        self.output_dir = output_dir; self.transcriber = transcriber
+        self.keep_audio = keep_audio; self.max_take_seconds = max_take_seconds
+    }
+
+    public static let defaultMaxTakeSeconds: Double = 4 * 3600
+
+    public static func load(_ path: String = UserPaths.configFile) -> WorkerConfig {
+        guard let d = FileManager.default.contents(atPath: path),
+              let c = try? JSONDecoder().decode(WorkerConfig.self, from: d) else { return WorkerConfig() }
+        return c
+    }
+
+    public func save(_ path: String = UserPaths.configFile) throws {
+        try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                withIntermediateDirectories: true)
+        let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try writeAtomically(try enc.encode(self), to: path)
+    }
+}

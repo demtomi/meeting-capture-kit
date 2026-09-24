@@ -132,6 +132,16 @@ public final class TakeTranscriber {
         let durations = Dictionary(uniqueKeysWithValues: (live + silent).map { t in
             (t, (try? WavPeak.info(path: takeDir + "/" + m.tracks[t]!.path).durationSeconds) ?? 0)
         })
+        // The per-take ceiling, checked before any upload. A take longer than this is almost
+        // always a recording nobody stopped, and it would bill every minute of it.
+        let ceiling = WorkerConfig.load().max_take_seconds ?? WorkerConfig.defaultMaxTakeSeconds
+        if let longest = durations.values.max(), longest > ceiling {
+            guard claim.stillMine() else { return lost() }
+            _ = mark(Marker.refused, "longer than the \(Int(ceiling)) s ceiling")
+            reason(String(format: "the take is %.0f s long, over the %.0f s ceiling. Nothing uploaded. Raise max_take_seconds in %@ and --requeue it if it is real.",
+                          longest, ceiling, UserPaths.configFile))
+            return ExitCode.neverSucceeds
+        }
         let client = ScribeClient(
             base: base.url, key: key,
             sleep: { s in Thread.sleep(forTimeInterval: s * knobs.backoffScale) },

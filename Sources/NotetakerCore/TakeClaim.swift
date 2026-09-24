@@ -38,7 +38,11 @@ public final class TakeClaim {
     }
 
     public static func acquire(takeDir: String, stale: Double = staleSeconds, log: (String) -> Void) -> Acquire {
-        let path = takeDir + "/" + fileName
+        acquire(path: takeDir + "/" + fileName, stale: stale, log: log)
+    }
+
+    /// The same protocol on any path. The queue worker uses it for its drain lock.
+    public static func acquire(path: String, stale: Double = staleSeconds, log: (String) -> Void) -> Acquire {
         let token = UUID().uuidString
         var e = create(path, token: token)
         if e == EEXIST {

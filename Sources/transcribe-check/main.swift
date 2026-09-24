@@ -621,6 +621,70 @@ do {
           breaksIf: "the drain stops at the first failing take")
 }
 
+// ------------------------------------------------------------------ [w] worker extras
+print("\n[w] CEILING, STATUS, REQUEUE, RESUME, KEEP-AUDIO")
+do {
+    stub.reset()
+    let home = freshHome("w-ceiling")
+    try! WorkerConfig(max_take_seconds: 0.5).save(home.path + "/.config/meeting-capture/config.json")
+    let t = makeTake(in: freshOutputDir("w-ceiling"))
+    let r = run([t.manifest.path], home: home)
+    check("w a take longer than the ceiling exits 3 before any upload",
+          r.rc == 3 && stub.uploads.isEmpty && exists(t.workDir, ".refused") && exists(t.workDir, "mic.wav"),
+          breaksIf: "the per-take duration ceiling is not checked before upload")
+    check("w the default ceiling is 4 hours", WorkerConfig.defaultMaxTakeSeconds == 4 * 3600,
+          breaksIf: "the default ceiling moves")
+
+    // A scripted mixed queue.
+    let home2 = freshHome("w-status")
+    let out = freshOutputDir("w-status")
+    let pending = makeTake(in: out, id: "2026-01-02T03-04-01Z-0001")
+    let cooling = makeTake(in: out, id: "2026-01-02T03-04-02Z-0002")
+    try! "1 \(Int(Date().timeIntervalSince1970))\n".write(to: cooling.workDir.appendingPathComponent(".upload-attempts"), atomically: true, encoding: .utf8)
+    let failed = makeTake(in: out, id: "2026-01-02T03-04-03Z-0003")
+    try! "HTTP 500: synthetic\n".write(to: failed.workDir.appendingPathComponent(".upload-failed"), atomically: true, encoding: .utf8)
+    let claimed = makeTake(in: out, id: "2026-01-02T03-04-04Z-0004")
+    try! "12345 sometoken\n".write(to: claimed.workDir.appendingPathComponent(".claim"), atomically: true, encoding: .utf8)
+    let silentT = makeTake(in: out, id: "2026-01-02T03-04-05Z-0005")
+    try! "every track silent\n".write(to: silentT.workDir.appendingPathComponent(".silent-capture"), atomically: true, encoding: .utf8)
+    let s1 = run(["--status", out.path], home: home2).out
+    print("        --status on a scripted queue:")
+    for l in s1.split(separator: "\n") { print("        | \(l)") }
+    check("w --status names pending, cooling down, failed with reason and command, claimed, silent",
+          s1.contains("\(pending.id)  pending") && s1.contains("\(cooling.id)  cooling down")
+            && s1.contains("\(failed.id)  failed .upload-failed: HTTP 500: synthetic  -> meeting-transcribe --requeue \(failed.id)")
+            && s1.contains("\(claimed.id)  claimed") && s1.contains("\(silentT.id)  failed .silent-capture"),
+          breaksIf: "--status loses a state or its next command")
+    try! fm.createDirectory(atPath: out.path + "/.transcribe-state", withIntermediateDirectories: true)
+    try! "no consent\n".write(toFile: out.path + "/.transcribe-state/paused", atomically: true, encoding: .utf8)
+    let s2 = run(["--status", out.path], home: home2).out
+    check("w --status shows the pause and its reason first",
+          s2.hasPrefix("PAUSED: no consent") && s2.contains("--resume"),
+          breaksIf: "a paused worker is invisible in --status")
+    let rq = run(["--requeue", failed.id, out.path], home: home2)
+    let rs = run(["--resume", out.path], home: home2)
+    let s3 = run(["--status", out.path], home: home2).out
+    check("w --requeue clears the marker and --resume removes the pause",
+          rq.rc == 0 && rs.rc == 0 && s3.contains("\(failed.id)  pending") && !s3.contains("PAUSED")
+            && !exists(failed.workDir, ".upload-failed"),
+          breaksIf: "a failed take or a paused queue has no way back")
+    check("w --requeue refuses an id that is not a take",
+          run(["--requeue", "../x", out.path], home: home2).rc == 2,
+          breaksIf: "--requeue follows a path out of .work")
+
+    // keep-audio: a proven transcript keeps the take, marks it done, and is never uploaded again.
+    stub.reset()
+    let home3 = freshHome("w-keep")
+    let outK = freshOutputDir("w-keep")
+    let tk = makeTake(in: outK)
+    _ = run(["--drain", outK.path, "--keep-audio"], home: home3)
+    _ = run(["--drain", outK.path, "--keep-audio"], home: home3)
+    check("w keep-audio: transcript written, audio kept, marked done, not uploaded twice",
+          transcriptOf(tk) != nil && exists(tk.workDir, "mic.wav") && exists(tk.workDir, ".transcribed")
+            && stub.uploads(track: "mic") == 1,
+          breaksIf: "keep-audio stops the delete but not the re-pick, so every drain pays again")
+}
+
 // ------------------------------------------------------------------ [d] two runners
 print("\n[d] TWO RUNNERS ON ONE TAKE UPLOAD IT ONCE")
 do {
