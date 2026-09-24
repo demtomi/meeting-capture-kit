@@ -73,8 +73,18 @@ public final class TakeTranscriber {
             reason(refusal ?? "bad API base")
             return ExitCode.badArguments
         }
+        // Consent gates every path, the synchronous one included. Account-wide, so exit 5.
+        switch Consent.state() {
+        case .valid: break
+        case .absent:
+            reason("no consent to upload. A person must run, in a terminal: meeting-transcribe --consent-upload")
+            return ExitCode.accountStop
+        case .stale:
+            reason("no consent: the recorded consent is for a different disclosure. Read the new one and run, in a terminal: meeting-transcribe --consent-upload")
+            return ExitCode.accountStop
+        }
         guard let key = env.key(loopback: base.isLoopback) else {
-            reason("no key. Add it with: security add-generic-password -s meeting-capture-elevenlabs -a \"$USER\" -w")
+            reason("no key. Add it with: \(KeySource.addCommand)")
             return ExitCode.accountStop
         }
         let knobs = base.isLoopback ? env.testKnobs : TestKnobs()
@@ -267,9 +277,10 @@ public struct RuntimeEnv {
     }
 
     /// The key. On a loopback base it is the test key and nothing else, so a check can
-    /// never read a real one. Real key sources arrive with KeySource.
+    /// never read a real one, and a real key is never sent to a test server.
     public func key(loopback: Bool) -> String? {
         if loopback { return testKey }
+        if case .found(let k, _) = KeySource.resolve() { return k }
         return nil
     }
 

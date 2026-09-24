@@ -94,10 +94,36 @@ if args.contains("--resume") {
     exit(worker(outputDir(after: "--resume")).resume())
 }
 
-if args.contains("--consent-upload") {
-    // NAIVE until step 11.
-    try? Consent.write(Consent.currentRecord())
-    exit(0)
+if args.contains("--revoke-consent") && !args.contains("--uninstall-worker") {
+    if FileManager.default.fileExists(atPath: UserPaths.consentFile) {
+        try? FileManager.default.removeItem(atPath: UserPaths.consentFile)
+        say("consent revoked: removed \(UserPaths.consentFile). Nothing will upload until a person consents again.")
+    } else {
+        say("no consent file at \(UserPaths.consentFile). Nothing to revoke.")
+    }
+    exit(ExitCode.ok)
+}
+
+/// Prints the disclosure and records consent. Refuses when stdin is not a terminal, so
+/// an agent's non-interactive shell cannot consent on a person's behalf. A refusal, not a
+/// prompt: a missing terminal can only mean less happens.
+func recordConsent() -> Int32 {
+    say(Consent.disclosureText)
+    say("")
+    guard KeySource.stdinIsTerminal else {
+        err("--consent-upload refused: stdin is not a terminal. A person must run this command themselves, in a terminal, after reading the text above. No consent was recorded.")
+        return ExitCode.badArguments
+    }
+    do { try Consent.write(Consent.currentRecord()) } catch {
+        err("could not write \(UserPaths.consentFile): \(error)")
+        return ExitCode.transient
+    }
+    say("consent recorded in \(UserPaths.consentFile) (disclosure \(Consent.disclosureHash.prefix(12)), version \(Consent.version)).")
+    return ExitCode.ok
+}
+
+if args.contains("--consent-upload") && !args.contains("--install-worker") {
+    exit(recordConsent())
 }
 
 guard args.count == 1, !args[0].hasPrefix("-") else {

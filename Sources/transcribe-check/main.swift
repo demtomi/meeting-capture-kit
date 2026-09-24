@@ -858,6 +858,49 @@ do {
           breaksIf: "an agent's shell can record consent on the human's behalf")
 }
 
+do {
+    // The positive control: without it, "always refuse" passes j. `script` gives the
+    // child a real pseudo-terminal, against a scratch HOME.
+    let home = freshHome("j-tty", consent: .none)
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/script")
+    p.arguments = ["-q", "/dev/null", transcribeBin, "--consent-upload"]
+    p.environment = toolEnv(home: home, [:])
+    p.standardInput = FileHandle(forReadingAtPath: "/dev/null")
+    p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
+    try! p.run(); p.waitUntilExit()
+    let path = home.path + "/.config/meeting-capture/consent"
+    let rec = Consent.read(path)
+    check("j with a terminal, --consent-upload records the current disclosure hash, version and cost",
+          p.terminationStatus == 0 && rec?.disclosure_sha256 == Consent.disclosureHash && rec?.version == Consent.version
+            && rec?.cost_shown.contains("20.19") == true,
+          breaksIf: "consent is refused even from a person's terminal, or records the wrong disclosure")
+    let rv = run(["--revoke-consent"], home: home)
+    check("j --revoke-consent deletes the consent file", rv.rc == 0 && !fm.fileExists(atPath: path),
+          breaksIf: "consent cannot be withdrawn")
+    check("j the disclosure names the US endpoint, retention, the DPA and the measured cost",
+          Consent.disclosureText.contains("US endpoint") && Consent.disclosureText.contains("zero-retention")
+            && Consent.disclosureText.contains("elevenlabs.io/dpa") && Consent.disclosureText.contains("20.19"),
+          breaksIf: "the disclosure a person consents to loses one of the facts it exists to state")
+}
+
+print("\n[k] THE KEY SOURCE")
+do {
+    let found = stubTranscriber("fake-security", "echo stub-key-from-keychain; exit 0")
+    let absent = stubTranscriber("fake-security-absent", "exit 44")
+    check("k the key is read by exec'ing security",
+          KeySource.resolve(environment: [:], interactive: false, securityPath: found) == .found("stub-key-from-keychain", from: "Keychain item meeting-capture-elevenlabs"),
+          breaksIf: "the Keychain read stops going through the security binary")
+    check("k ELEVENLABS_API_KEY is ignored when stdin is not a terminal",
+          KeySource.resolve(environment: ["ELEVENLABS_API_KEY": "env-key"], interactive: false, securityPath: absent)
+            == .missing("no key in the Keychain item meeting-capture-elevenlabs. Add it with: \(KeySource.addCommand)"),
+          breaksIf: "an unattended worker picks up a key from its environment")
+    check("k ELEVENLABS_API_KEY is the fallback for an interactive run",
+          KeySource.resolve(environment: ["ELEVENLABS_API_KEY": "env-key"], interactive: true, securityPath: absent)
+            == .found("env-key", from: "ELEVENLABS_API_KEY (interactive run)"),
+          breaksIf: "the interactive fallback is dropped")
+}
+
 // ------------------------------------------------------------------ override refusal
 print("\n[override] THE TEST BASE URL IS LOOPBACK ONLY")
 do {
