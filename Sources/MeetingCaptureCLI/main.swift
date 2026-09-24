@@ -458,27 +458,11 @@ if capturedFrames == 0 {
 }
 
 // ---- manifest ------------------------------------------------------------
-var tracks: [String: Any] = [
-    "mic": ["path": "mic.wav", "host": true, "speaker": host]
-]
-if wantSystem { tracks["system"] = ["path": "system.wav", "host": false] }
-
-var manifest: [String: Any] = [
-    "schema": 2,
-    "meeting_id": meetingID,
-    "label": label,
-    "source": source,
-    "started_at": startedAt,
-    "shared_start_monotonic_ns": sharedStartNs,
-    "tracks": tracks,
-    "output_dir": outputDir,
-]
-if let langHint { manifest["language_hint"] = langHint }
-// Schema 2: written for EVERY source. On mic+system it is the remote head count, on
-// mic-multi the head count in the room. A transcriber pins diarization to it, and on a
-// one-remote-voice call skips diarization, which on one voice can only invent speakers.
-// Absent means not known, and the reader diarizes.
-if let expectedSpeakers { manifest["expected_speakers"] = expectedSpeakers }
+// Built in NotetakerCore so a check can assert what a take's manifest says, with no device.
+let manifest = CaptureManifest.make(
+    meetingID: meetingID, label: label, source: source, startedAt: startedAt,
+    sharedStartNs: sharedStartNs, host: host, hasSystemTrack: wantSystem, outputDir: outputDir,
+    languageHint: langHint, expectedSpeakers: expectedSpeakers)
 
 let manifestPath = "\(workDir)/manifest.json"
 let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])

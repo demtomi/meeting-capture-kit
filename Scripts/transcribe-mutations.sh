@@ -33,9 +33,10 @@ MANIFEST="$CORE/Manifest.swift"
 PROOF="$CORE/TakeProof.swift"
 RENDER="$CORE/Renderer.swift"
 INSTALL="$CORE/Install.swift"
+CAPMAN="$CORE/CaptureManifest.swift"
 MAIN="Sources/meeting-transcribe/main.swift"
 FILES=("$HANDOFF" "$WORKER" "$TRANSCRIBE" "$CLIENT" "$CLAIM" "$CONSENT" "$KEYS" "$WAV"
-       "$MANIFEST" "$PROOF" "$RENDER" "$INSTALL" "$MAIN")
+       "$MANIFEST" "$PROOF" "$RENDER" "$INSTALL" "$CAPMAN" "$MAIN")
 
 BACKUP="$(mktemp -d)"
 for f in "${FILES[@]}"; do
@@ -259,6 +260,9 @@ limb "relative paths are resolved twice" "$HANDOFF" \
 limb "the idle timeout is a fixed 300 s" "$CLIENT" \
     's/    public static func requestTimeout(audioSeconds: Double) -> Double { resourceTimeout(audioSeconds: audioSeconds) }/    public static func requestTimeout(audioSeconds: Double) -> Double { 300 }/' \
     "c the idle timeout covers server processing: it is never shorter than the total timeout"
+limb "every manifest is stamped schema 2" "$CAPMAN" \
+    's/            "schema": needsSchema2 ? 2 : 1,/            "schema": 2,/' \
+    "capture-manifest: a take with no schema-2 field is written as schema 1"
 
 echo
 echo "======================================================="

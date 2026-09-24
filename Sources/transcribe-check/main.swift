@@ -236,6 +236,30 @@ do {
           breaksIf: "relative paths are resolved against the child's cwd a second time (got exit \(rc))")
 }
 
+print("\n[capture-manifest] WHAT THE CAPTURE CLI WRITES")
+do {
+    func made(_ source: String, speakers: Int? = nil) -> [String: Any] {
+        CaptureManifest.make(meetingID: "2026-01-02T03-04-05Z-ab12", label: "x", source: source,
+                             startedAt: "2026-01-02T04:04:05+01:00", sharedStartNs: 1, host: "A",
+                             hasSystemTrack: source == "mic+system", outputDir: "/tmp/x",
+                             languageHint: nil, expectedSpeakers: speakers)
+    }
+    func schema(_ m: [String: Any]) -> Int? { m["schema"] as? Int }
+    check("capture-manifest: a take with no schema-2 field is written as schema 1",
+          schema(made("mic+system")) == 1 && schema(made("mic")) == 1,
+          breaksIf: "every manifest is stamped schema 2, so every schema-1 reader refuses takes it could read")
+    check("capture-manifest: mic-multi with a head count is still schema 1, as schema 1 already had it",
+          schema(made("mic-multi", speakers: 4)) == 1 && made("mic-multi", speakers: 4)["expected_speakers"] as? Int == 4,
+          breaksIf: "a field schema 1 already carried bumps the schema")
+    check("capture-manifest: expected_speakers on mic+system is written, as schema 2",
+          schema(made("mic+system", speakers: 1)) == 2 && made("mic+system", speakers: 1)["expected_speakers"] as? Int == 1,
+          breaksIf: "the remote head count is dropped, or written under a schema that does not define it")
+    let decoded = try? Manifest.decode(try! JSONSerialization.data(withJSONObject: made("mic+system", speakers: 1)))
+    check("capture-manifest: what the capture CLI writes, the transcriber reads",
+          decoded?.expectedSpeakers == 1 && decoded?.schema == 2,
+          breaksIf: "the writer and the reader drift apart")
+}
+
 // ------------------------------------------------------------------ [proof] the rule itself
 print("\n[proof] THE SHARED PROOF FUNCTION")
 do {
