@@ -158,7 +158,11 @@ public final class ScribeClient {
         let stallLimit = sendStallOverride ?? Self.sendStallSeconds
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
         timer.schedule(deadline: .now() + min(1, stallLimit / 2), repeating: min(1, stallLimit / 2))
-        timer.setEventHandler { if watch.stalled(for: stallLimit) { task.cancel() } }
+        timer.setEventHandler {
+            // Once the whole body is out, the watchdog has nothing left to guard: stop ticking.
+            if watch.bodyFinished { timer.cancel(); return }
+            if watch.stalled(for: stallLimit) { task.cancel() }
+        }
         timer.resume()
         task.resume()
         done.wait()
@@ -190,25 +194,33 @@ public final class ScribeClient {
     }
 }
 
-/// Tracks upload progress for the stalled-send watchdog.
-final class SendWatch: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+/// Tracks upload progress for the stalled-send watchdog. Every field is read and written
+/// under the lock: URLSession calls in on its own queue, the timer on another.
+public final class SendWatch: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var lastProgress = Date()
     private var sent: Int64 = 0
     private var expected: Int64 = -1
-    private(set) var didStall = false
+    private var _didStall = false
 
-    func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
+    public override init() { super.init() }
+
+    public var didStall: Bool { lock.lock(); defer { lock.unlock() }; return _didStall }
+
+    /// True once every byte of the body has been handed to the socket.
+    public var bodyFinished: Bool { lock.lock(); defer { lock.unlock() }; return expected > 0 && sent >= expected }
+
+    public func urlSession(_ session: URLSession, task: URLSessionTask, didSendBodyData bytesSent: Int64,
                     totalBytesSent: Int64, totalBytesExpectedToSend: Int64) {
         lock.lock(); lastProgress = Date(); sent = totalBytesSent; expected = totalBytesExpectedToSend; lock.unlock()
     }
 
     /// True once, when the body is not fully sent and nothing moved for `limit` seconds.
-    func stalled(for limit: Double) -> Bool {
+    public func stalled(for limit: Double) -> Bool {
         lock.lock(); defer { lock.unlock() }
         let bodyDone = expected > 0 && sent >= expected
-        guard !didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }
-        didStall = true
+        guard !_didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }
+        _didStall = true
         return true
     }
 }

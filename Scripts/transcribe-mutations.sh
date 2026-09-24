@@ -350,6 +350,12 @@ limb "the deleter spells the tombstone prefix itself" "$CLAIM" \
 limb "the takeover lock leaks into children" "$CLAIM" \
     's/            let lockFD = open(path + ".takeover", O_CREAT | O_RDWR | O_CLOEXEC, 0o644)/            let lockFD = open(path + ".takeover", O_CREAT | O_RDWR, 0o644)/' \
     "claim: the takeover lock is free once acquire returns, even with a child spawned meanwhile"
+limb "the doctor probe sleeps for real" "$CORE/Doctor.swift" \
+    's/            sleep(0.2)$/            Thread.sleep(forTimeInterval: 0.2)/' \
+    "doctor: the key probe waits through the injected sleep, not a hidden real one"
+limb "the watchdog cannot tell a finished body" "$CLIENT" \
+    's/    public var bodyFinished: Bool { lock.lock(); defer { lock.unlock() }; return expected > 0 \&\& sent >= expected }/    public var bodyFinished: Bool { false }/' \
+    "c the watchdog knows when the body is finished, and a finished body is never a stall"
 
 echo
 echo "======================================================="

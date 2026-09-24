@@ -110,8 +110,10 @@ public final class Doctor {
         let (rc, out) = runner(["bootstrap", "gui/\(uid)", plist])
         defer { _ = runner(["bootout", "gui/\(uid)/\(label)"]) }
         guard rc == 0 else { add(.fail, "key from launchd: probe did not load (\(out.trimmingCharacters(in: .whitespacesAndNewlines)))"); return }
-        let end = Date().addingTimeInterval(keyProbeWait)
-        while Date() < end, !fm.fileExists(atPath: result) { Thread.sleep(forTimeInterval: 0.2) }
+        // Counted polls through the injected sleep, so a check never waits for real.
+        for _ in 0..<max(1, Int((keyProbeWait / 0.2).rounded(.up))) where !fm.fileExists(atPath: result) {
+            sleep(0.2)
+        }
         let r = (try? String(contentsOfFile: result, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
         switch r {
         case "found": add(.pass, "key from launchd: the worker's context can read the Keychain item")

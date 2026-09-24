@@ -638,6 +638,18 @@ do {
           breaksIf: "the watchdog also fires while the provider processes, and cancels (and re-bills) a working request (rc \(r2.rc))")
 }
 
+do {
+    // The watchdog's own state: finished once every byte is sent, and never a stall after that.
+    let w = SendWatch()
+    let dummy = URLSession.shared.dataTask(with: URL(string: "http://127.0.0.1:9/")!)
+    w.urlSession(URLSession.shared, task: dummy, didSendBodyData: 10, totalBytesSent: 50, totalBytesExpectedToSend: 100)
+    let midway = w.bodyFinished
+    w.urlSession(URLSession.shared, task: dummy, didSendBodyData: 50, totalBytesSent: 100, totalBytesExpectedToSend: 100)
+    check("c the watchdog knows when the body is finished, and a finished body is never a stall",
+          !midway && w.bodyFinished && !w.stalled(for: 0) && !w.didStall,
+          breaksIf: "the watchdog cannot tell a finished body from a stalled one, so it keeps ticking or cancels processing")
+}
+
 print("\n[c] HOW THE WORKER TREATS EACH EXIT")
 do {
     let home = freshHome("cw")
@@ -1464,6 +1476,14 @@ do {
     let d4 = Doctor(ownBinary: transcribeBin, outputDir: nil, env: RuntimeEnv(), captureProbe: false,
                     runner: r4, keyProbeWait: 0.3, sleep: { _ in })
     d4.launchdKeyRead()
+    var slept = 0
+    let (r5, _) = recorder(loadedFor: 1)
+    let d5 = Doctor(ownBinary: transcribeBin, outputDir: nil, env: RuntimeEnv(), captureProbe: false,
+                    runner: r5, keyProbeWait: 0.3, sleep: { _ in slept += 1 })
+    d5.launchdKeyRead()
+    check("doctor: the key probe waits through the injected sleep, not a hidden real one",
+          slept >= 3,
+          breaksIf: "the probe's result loop sleeps for real whatever the caller injects (injected sleeps \(slept))")
     check("doctor: the key probe bootstraps only after print says the old probe is gone, and never while it stays",
           Array(c3().prefix(4)) == ["bootout", "print", "print", "bootstrap"] && !c4().contains("bootstrap")
             && d4.lines.contains { $0.0 == .fail && $0.1.contains("still unloading") },
