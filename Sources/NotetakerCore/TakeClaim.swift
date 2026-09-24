@@ -152,7 +152,7 @@ public func removeTakeHoldingClaim(_ takeDir: String, log: (String) -> Void = { 
         // could claim the half-deleted folder in that gap. The tombstone's dot-name keeps
         // every scan off it, and the next drain clears one a crash left behind.
         let tomb = ((takeDir as NSString).deletingLastPathComponent as NSString)
-            .appendingPathComponent(".deleting-\((takeDir as NSString).lastPathComponent)-\(claim.token)")
+            .appendingPathComponent("\(tombstonePrefix)\((takeDir as NSString).lastPathComponent)-\(claim.token)")
         guard rename(takeDir, tomb) == 0 else {
             let e = errno                       // read now: release() may overwrite it
             claim.release()

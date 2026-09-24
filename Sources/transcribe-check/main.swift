@@ -938,17 +938,24 @@ do {
     let out = freshOutputDir("tomb")
     let t = makeTake(in: out)
     var stillQueued = true
-    let r = removeTakeHoldingClaim(t.workDir.path, beforeRecursiveDelete: { stillQueued = fm.fileExists(atPath: t.workDir.path) })
+    var tombsDuring = -1
+    let r = removeTakeHoldingClaim(t.workDir.path, beforeRecursiveDelete: {
+        stillQueued = fm.fileExists(atPath: t.workDir.path)
+        tombsDuring = ((try? fm.contentsOfDirectory(atPath: out.path + "/.work")) ?? []).filter { $0.hasPrefix(tombstonePrefix) }.count
+    })
     check("tomb: the take is out of .work/<id> before the recursive delete starts",
           r == .removed && !stillQueued && !exists(t.workDir),
           breaksIf: "the take is deleted in place, so a runner can claim a half-deleted folder")
-    let leftovers = ((try? fm.contentsOfDirectory(atPath: out.path + "/.work")) ?? []).filter { $0.hasPrefix(".deleting-") }
+    check("tomb: the tombstone is named with the prefix the cleaner looks for",
+          tombsDuring == 1,
+          breaksIf: "the deleter and the cleaner spell the tombstone prefix differently, so a crash's tombstone is never cleared (found \(tombsDuring))")
+    let leftovers = ((try? fm.contentsOfDirectory(atPath: out.path + "/.work")) ?? []).filter { $0.hasPrefix(tombstonePrefix) }
     check("tomb: nothing is left behind after a removal", leftovers.isEmpty,
           breaksIf: "the tombstone is renamed but never deleted")
 
     let home = freshHome("tomb")
     let out2 = freshOutputDir("tomb-crash")
-    let crashed = out2.appendingPathComponent(".work/.deleting-2026-01-02T03-04-05Z-ab12-sometoken")
+    let crashed = out2.appendingPathComponent(".work/\(tombstonePrefix)2026-01-02T03-04-05Z-ab12-sometoken")
     try! fm.createDirectory(at: crashed, withIntermediateDirectories: true)
     try! wavData(seconds: 1, amplitude: 8000).write(to: crashed.appendingPathComponent("mic.wav"))
     let longAgo = [timeval(tv_sec: 1, tv_usec: 0), timeval(tv_sec: 1, tv_usec: 0)]
@@ -961,7 +968,7 @@ do {
 
     // A FRESH tombstone may belong to a deleter that is still at work: leave it alone.
     let out3 = freshOutputDir("tomb-fresh")
-    let fresh = out3.appendingPathComponent(".work/.deleting-2026-01-02T03-04-05Z-ab12-livetoken")
+    let fresh = out3.appendingPathComponent(".work/\(tombstonePrefix)2026-01-02T03-04-05Z-ab12-livetoken")
     try! fm.createDirectory(at: fresh, withIntermediateDirectories: true)
     try! wavData(seconds: 1, amplitude: 8000).write(to: fresh.appendingPathComponent("mic.wav"))
     _ = run(["--drain", out3.path], home: home)
@@ -971,7 +978,7 @@ do {
 
     // A tombstone that cannot be removed is reported as such, never as removed.
     let out4 = freshOutputDir("tomb-stuck")
-    let stuck = out4.appendingPathComponent(".work/.deleting-2026-01-02T03-04-05Z-ab12-stucktoken")
+    let stuck = out4.appendingPathComponent(".work/\(tombstonePrefix)2026-01-02T03-04-05Z-ab12-stucktoken")
     try! fm.createDirectory(at: stuck, withIntermediateDirectories: true)
     try! wavData(seconds: 1, amplitude: 8000).write(to: stuck.appendingPathComponent("mic.wav"))
     utimes(stuck.path, longAgo)

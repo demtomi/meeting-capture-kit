@@ -344,6 +344,9 @@ limb "a stuck tombstone is logged as removed" "$WORKER" \
 limb "a rename failure is blamed on another runner" "$CLAIM" \
     's/            return .failed("could not move it out of the queue: \\(String(cString: strerror(e)))")/            return .heldElsewhere("another runner holds it")/' \
     "tomb: a take that cannot be moved out reports the real error and is not re-run"
+limb "the deleter spells the tombstone prefix itself" "$CLAIM" \
+    's/            .appendingPathComponent("\\(tombstonePrefix)\\((takeDir/            .appendingPathComponent(".gone-\\((takeDir/' \
+    "tomb: the tombstone is named with the prefix the cleaner looks for"
 
 echo
 echo "======================================================="
