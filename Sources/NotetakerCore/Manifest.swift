@@ -13,6 +13,9 @@ public struct Manifest: Equatable {
         public let path: String
         public let host: Bool
         public let speaker: String?
+        public init(path: String, host: Bool, speaker: String?) {
+            self.path = path; self.host = host; self.speaker = speaker
+        }
     }
 
     public static let supportedSchemas: Set<Int> = [1, 2]
@@ -26,6 +29,13 @@ public struct Manifest: Equatable {
     public let tracks: [String: Track]
     public let languageHint: String?
     public let expectedSpeakers: Int?
+
+    public init(schema: Int, meetingID: String, label: String, source: String, startedAt: String,
+                tracks: [String: Track], languageHint: String?, expectedSpeakers: Int?) {
+        self.schema = schema; self.meetingID = meetingID; self.label = label; self.source = source
+        self.startedAt = startedAt; self.tracks = tracks; self.languageHint = languageHint
+        self.expectedSpeakers = expectedSpeakers
+    }
 
     public enum LoadError: Error, Equatable, CustomStringConvertible {
         case unreadable(String)

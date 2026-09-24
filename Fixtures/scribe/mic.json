@@ -1,0 +1,78 @@
+{
+ "language_code": "eng",
+ "language_probability": 0.98,
+ "text": "synthetic",
+ "audio_duration_secs": 3710.0,
+ "words": [
+  {
+   "text": "good",
+   "start": 0.0,
+   "end": 0.2,
+   "type": "word",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": " ",
+   "start": 0.25,
+   "end": 0.25,
+   "type": "spacing",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": "morning",
+   "start": 0.25,
+   "end": 0.6,
+   "type": "word",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": "(laughs)",
+   "start": 2.0,
+   "end": 2.2,
+   "type": "audio_event",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": " ",
+   "start": 5.0,
+   "end": 5.0,
+   "type": "spacing",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": "sounds",
+   "start": 5.0,
+   "end": 5.3,
+   "type": "word",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": " ",
+   "start": 5.35,
+   "end": 5.35,
+   "type": "spacing",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": "fine",
+   "start": 5.35,
+   "end": 5.6,
+   "type": "word",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": " ",
+   "start": 8.0,
+   "end": 8.0,
+   "type": "spacing",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": "again",
+   "start": 8.0,
+   "end": 8.3,
+   "type": "word",
+   "speaker_id": "speaker_0"
+  }
+ ]
+}

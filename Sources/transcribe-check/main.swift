@@ -249,6 +249,99 @@ do {
           breaksIf: "the slug keeps a path separator or a leading dot")
 }
 
+// ------------------------------------------------------------------ [r] renderer
+print("\n[r] THE RENDERER")
+do {
+    // Resolved relative to the package, not the cwd. A missing fixture FAILS the run.
+    let fixtures = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("Fixtures/scribe")
+    guard let micData = fm.contents(atPath: fixtures.appendingPathComponent("mic.json").path),
+          let sysData = fm.contents(atPath: fixtures.appendingPathComponent("system-diarized.json").path),
+          let micR = ScribeResult.parse(micData), let sysR = ScribeResult.parse(sysData) else {
+        missing("Fixtures/scribe/mic.json or system-diarized.json")
+    }
+    func manifest(source: String = "mic+system", label: String = "weekly sync", host: String = "Alex Host") -> Manifest {
+        var tracks: [String: Manifest.Track] = ["mic": .init(path: "mic.wav", host: true, speaker: host)]
+        if source == "mic+system" { tracks["system"] = .init(path: "system.wav", host: false, speaker: nil) }
+        return Manifest(schema: 2, meetingID: "2026-01-02T03-04-05Z-ab12", label: label, source: source,
+                        startedAt: "2026-01-02T04:04:05+01:00", tracks: tracks, languageHint: nil, expectedSpeakers: nil)
+    }
+    let full = RenderInput(manifest: manifest(), results: ["mic": micR, "system": sysR],
+                           diarized: ["mic": false, "system": true], silentTracks: [], durationSeconds: 3710)
+    let text = Renderer.render(full)
+    let body = text.components(separatedBy: "\n---\n").last!.split(separator: "\n").map(String.init)
+    let expected = [
+        "1  [00:00:00] Alex Host: good morning",
+        "2  [00:00:00] Speaker 1: hi all",
+        "3  [00:00:01] Speaker 2: hey",
+        "4  [00:00:05] Alex Host: sounds fine",
+        "5  [00:00:08] Alex Host: again",
+        "6  [01:01:40] Speaker 1: great",
+    ]
+    check("r line format: <n>, two spaces, [HH:MM:SS], speaker, colon, text",
+          body == expected,
+          breaksIf: "the body line shape changes (got \(body))")
+    check("r interleave: both tracks merge by start time, a long pause splits a turn",
+          body.count == 6 && body[1].contains("Speaker 1") && body[4].hasSuffix("again"),
+          breaksIf: "tracks are concatenated instead of merged, or the 1.2 s turn gap is not applied")
+    check("r only spoken words: no audio events, no spacing tokens, no Markdown bold or list dot",
+          !text.contains("laughs") && !text.contains("**") && !body.contains { $0.hasPrefix("1. ") },
+          breaksIf: "non-word entries reach the text, or the private bullet format comes back")
+    let fmKeys = text.components(separatedBy: "\n---\n")[0].split(separator: "\n")
+        .filter { !$0.hasPrefix(" ") && $0 != "---" }.map { String($0.split(separator: ":")[0]) }
+    check("r frontmatter keys, in order",
+          fmKeys == ["schema", "title", "date", "start", "duration", "language", "participants", "source",
+                     "diarization", "transcription", "meeting_id"],
+          breaksIf: "a frontmatter key is added, dropped or reordered (got \(fmKeys))")
+    check("r frontmatter values: date, start with offset, duration, provider language, schema 1",
+          text.contains("date: \"2026-01-02\"") && text.contains("start: \"04:04 +01:00\"")
+            && text.contains("duration: \"61m50s\"") && text.contains("language: \"eng\"") && text.contains("schema: 1\n"),
+          breaksIf: "a frontmatter value is derived from the wrong field")
+    check("r the rendered file passes the proof parser",
+          parseFrontmatter(text)?["meeting_id"] == "2026-01-02T03-04-05Z-ab12",
+          breaksIf: "the renderer and the proof disagree on the frontmatter shape, so no take is ever deleted")
+
+    let solo = RenderInput(manifest: manifest(), results: ["mic": micR, "system": sysR],
+                           diarized: ["mic": false, "system": false], silentTracks: [], durationSeconds: 10)
+    let micOnly = RenderInput(manifest: manifest(source: "mic"), results: ["mic": micR],
+                              diarized: ["mic": false], silentTracks: [], durationSeconds: 10)
+    check("r diarization enum: all three values",
+          text.contains("diarization: \"elevenlabs, 3 speakers\"")
+            && Renderer.render(solo).contains("diarization: \"none (single remote track)\"")
+            && Renderer.render(micOnly).contains("diarization: \"none (in-person single track)\""),
+          breaksIf: "the diarization value drifts from the three locked strings")
+    check("r an undiarized remote track is one speaker",
+          !Renderer.render(solo).contains("Speaker 2"),
+          breaksIf: "speaker ids are honoured on a track that was not diarized")
+
+    let silent = RenderInput(manifest: manifest(), results: ["mic": micR], diarized: ["mic": false],
+                             silentTracks: ["system"], durationSeconds: 10)
+    check("r silent_tracks is written when a track was skipped, and only then",
+          Renderer.render(silent).contains("silent_tracks:\n  - \"system\"\n") && !text.contains("silent_tracks"),
+          breaksIf: "a one-sided transcript reads as a complete take")
+
+    let hostile = RenderInput(manifest: manifest(label: "../../etc/x \"quoted\"", host: "Eve: Admin\nX"),
+                              results: ["mic": micR], diarized: ["mic": false], silentTracks: [], durationSeconds: 1)
+    let ht = Renderer.render(hostile)
+    check("r a hostile label and host name cannot break the file shape",
+          parseFrontmatter(ht)?["meeting_id"] == "2026-01-02T03-04-05Z-ab12" && ht.contains("] Eve Admin X: good morning"),
+          breaksIf: "a quote, newline or colon in a name leaks into YAML or the speaker split")
+    let outDir = "/tmp/out"
+    let escapes = ["../../etc/passwd", "a/b", "..", "/abs", ".hidden"].allSatisfy { l in
+        let p = OutputNames.transcriptPath(outputDir: outDir, label: l, meetingID: "id")
+        return (p as NSString).deletingLastPathComponent == outDir && !((p as NSString).lastPathComponent.hasPrefix("."))
+    }
+    check("r slug: a / or .. in a label cannot leave the output dir or hide the file", escapes,
+          breaksIf: "the slug keeps a separator or a leading dot")
+
+    let many = (0..<300).map { i in ScribeWord(text: "w", start: Double(i), end: Double(i) + 0.5, speakerID: i == 150 ? "speaker_9" : "speaker_0") }
+    let phantom = RenderInput(manifest: manifest(), results: ["system": ScribeResult(words: many, languageCode: "eng", audioDurationSecs: 300)],
+                              diarized: ["system": true], silentTracks: [], durationSeconds: 300)
+    check("r a speaker with under 0.5% of the words is reported as a likely phantom",
+          Renderer.phantomSpeakers(phantom).map(\.label) == ["Speaker 2"],
+          breaksIf: "the phantom-speaker warning is dropped")
+}
+
 // ================================================================== WORKER AND TRANSCRIBER
 // Everything below runs the REAL `meeting-transcribe` binary as a child process, pointed at
 // the loopback stub. It is found next to this check, so `swift build` must have built it.
