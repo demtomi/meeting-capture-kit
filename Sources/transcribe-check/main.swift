@@ -1127,6 +1127,27 @@ do {
           [holds(resultA), holds(resultB)].filter { $0 }.count == 1,
           breaksIf: "takeover-lock recovery is unlink-then-create with an unowned release, so both takers hold the claim (A \(holds(resultA)), B \(holds(resultB)))")
 
+    // The takeover lock's two properties, pinned with a real second PROCESS: a live holder of
+    // the flock excludes a taker, and the kernel releases it the moment that holder dies. An
+    // O_EXCL lock file does neither (the file outlives its holder).
+    let dir3 = freshOutputDir("takeover-flock")
+    let path3 = dir3.path + "/.claim"
+    try! "\(getpid()) old-token\n".write(toFile: path3, atomically: true, encoding: .utf8)
+    utimes(path3, [timeval(tv_sec: 1, tv_usec: 0), timeval(tv_sec: 1, tv_usec: 0)])
+    let ready = dir3.path + "/holder.ready"
+    let holder = Process()
+    holder.executableURL = URL(fileURLWithPath: "/usr/bin/perl")
+    holder.arguments = ["-e", "use Fcntl ':flock'; open(my $f, '>>', $ARGV[0]) or die; flock($f, LOCK_EX) or die; open(my $r, '>', $ARGV[1]); close($r); sleep 60",
+                        path3 + ".takeover", ready]
+    try! holder.run()
+    let holding = waitFor(10) { fm.fileExists(atPath: ready) }
+    let whileHeld = TakeClaim.acquire(path: path3, stale: 60, log: { _ in })
+    kill(holder.processIdentifier, SIGKILL); holder.waitUntilExit()
+    let afterDeath = TakeClaim.acquire(path: path3, stale: 60, log: { _ in })
+    check("claim: a live process holding the takeover flock excludes a taker, and its death releases it",
+          holding && !holds(whileHeld) && holds(afterDeath),
+          breaksIf: "the takeover lock is not an flock the kernel ties to its holder (holder \(holding), while held \(holds(whileHeld)), after death \(holds(afterDeath)))")
+
     stub.reset()
     let homeP = freshHome("claim-race-proc")
     let tp = makeTake(in: freshOutputDir("claim-race-proc"))
