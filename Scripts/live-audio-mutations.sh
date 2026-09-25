@@ -28,6 +28,9 @@ set -uo pipefail
 
 # The package root is the PARENT of Scripts/, and the paths below are relative to it.
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Shared classifiers (here-strings, never a pipe into grep -q) and their 2 MB control.
+. "$HERE/lib-mutations.sh"
+lib_self_test || exit 1
 cd "$HERE/.."
 PASS=1
 
@@ -221,7 +224,7 @@ mutate_swift() {
     if [ "$expect" = "<crash>" ]; then
         # A trap is a legitimate way for a mutation to bite, but it must be distinguished
         # from a compile error, which would "fail" for every mutation equally.
-        if printf '%s' "$out" | grep -qE 'Fatal error|Illegal instruction|Trace/BPT'; then
+        if contains_re 'Fatal error|Illegal instruction|Trace/BPT' "$out"; then
             ok "$label -> trapped at runtime"
         else
             bad "$label — expected a runtime trap; got: $(printf '%s' "$out" | tail -3 | tr '\n' ';')"
@@ -236,7 +239,7 @@ mutate_swift() {
     # were in fact biting their named limb. Matching the bite first means a real red can
     # never be reclassified as a build error; the branch below only has to explain a run
     # that produced no bite at all.
-    if printf '%s' "$out" | grep -qF "FAIL  $expect"; then
+    if contains "FAIL  $expect" "$out"; then
         ok "$label -> \"$expect\" bit"
         return
     fi
@@ -244,11 +247,11 @@ mutate_swift() {
     # limb, so it is named as such rather than scored as a red. Anchored on `: error: `,
     # the `file:line:col: error:` diagnostic form — a bare `error: ` also matches an
     # argument label in quoted source.
-    if printf '%s' "$out" | grep -qE ': error: |Fatal error|Illegal instruction|Trace/BPT'; then
+    if contains_re ': error: |Fatal error|Illegal instruction|Trace/BPT' "$out"; then
         bad "$label — the mutation did not RUN clean (build error or trap); it tested nothing"
         return
     fi
-    bad "$label — expected \"$expect\" to fail; suite failed on: $(printf '%s' "$out" | grep '  FAIL  ' | head -3 | tr '\n' ';')"
+    bad "$label — expected \"$expect\" to fail; suite failed on: $(first_lines '  FAIL  ' "$out")"
 }
 
 # --- limb 1. The two ways to lose converter state, which are the two ways the one-shot

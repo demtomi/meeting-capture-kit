@@ -31,6 +31,9 @@ set -uo pipefail
 
 # The package root is the PARENT of Scripts/, and the paths below are relative to it.
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Shared classifiers (here-strings, never a pipe into grep -q) and their 2 MB control.
+. "$HERE/lib-mutations.sh"
+lib_self_test || exit 1
 cd "$HERE/.."
 PASS=1
 
@@ -255,19 +258,13 @@ mutate_swift() {
         bad "$label — the suite still EXITED 0 under mutation"
         return
     fi
-    # A build error fails for every mutation equally and says nothing about the limb, so
-    # it is separated from a real red rather than scored as one.
-    if printf '%s' "$out" | grep -qE 'error: |Compiling for macOS.*error'; then
-        bad "$label — the mutation did not BUILD; it tested nothing"
-        return
-    fi
-    # silence-gate-check prints "  FAIL  <label>" — TWO spaces. grep -F, so the
-    # parentheses and colons in the limb names are literal.
-    if printf '%s' "$out" | grep -qF "FAIL  $expect"; then
-        ok "$label -> \"$expect\" bit"
-    else
-        bad "$label — expected \"$expect\" to fail; suite failed on: $(printf '%s' "$out" | grep '  FAIL  ' | head -3 | tr '\n' ';')"
-    fi
+    # The NAMED FAIL first, then an anchored build error (lib-mutations.sh). silence-gate-check
+    # prints "  FAIL  <label>", TWO spaces; matched as a fixed string.
+    case "$(classify_output "FAIL  $expect" "$out")" in
+        bit)    ok "$label -> \"$expect\" bit" ;;
+        broken) bad "$label — the mutation did not BUILD; it tested nothing" ;;
+        *)      bad "$label — expected \"$expect\" to fail; suite failed on: $(first_lines '  FAIL  ' "$out")" ;;
+    esac
 }
 
 # --- The remote gate. Two ways to lose the "never live" condition, and they are

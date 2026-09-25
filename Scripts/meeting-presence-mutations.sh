@@ -25,6 +25,9 @@ set -uo pipefail
 
 # The package root is the PARENT of Scripts/, and the paths below are relative to it.
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# Shared classifiers (here-strings, never a pipe into grep -q) and their 2 MB control.
+. "$HERE/lib-mutations.sh"
+lib_self_test || exit 1
 cd "$HERE/.."
 PASS=1
 
@@ -137,18 +140,18 @@ mutate_swift() {
     # for the bite scored every mutation in the sibling live-audio harness as "did not
     # build" while each was in fact biting its named limb. Matching the bite first means
     # a real red can never be reclassified as a build error.
-    if printf '%s' "$out" | grep -qF "FAIL  $expect"; then
+    if contains "FAIL  $expect" "$out"; then
         ok "$label -> \"$expect\" bit"
         return
     fi
     # A build error or a trap fails for every mutation equally and says nothing about the
     # limb, so it is named as such rather than scored as a red. Anchored on `: error: `,
     # the `file:line:col: error:` diagnostic form.
-    if printf '%s' "$out" | grep -qE ': error: |Fatal error|Illegal instruction|Trace/BPT'; then
+    if contains_re ': error: |Fatal error|Illegal instruction|Trace/BPT' "$out"; then
         bad "$label — the mutation did not RUN clean (build error or trap); it tested nothing"
         return
     fi
-    bad "$label — expected \"$expect\"; suite failed on: $(printf '%s' "$out" | grep '  FAIL  ' | head -3 | tr '\n' ';')"
+    bad "$label — expected \"$expect\"; suite failed on: $(first_lines '  FAIL  ' "$out")"
 }
 
 # --- prompt-once. The headline failure: a modal every 3 s for an hour.

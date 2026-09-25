@@ -12,6 +12,7 @@
 import Foundation
 import CaptureIO
 import SilenceGate
+import NotetakerCore
 
 extension String {
     var expandingTildeInPath: String { (self as NSString).expandingTildeInPath }
@@ -65,7 +66,10 @@ OPTIONS
   --seconds <n>           Stop after n seconds. Default: run until you stop it.
   --host <name>           Speaker label for the mic track. Default: your account name.
   --lang <code>           Advisory language hint, written to the manifest.
-  --speakers <n>          Advisory head count for mic-multi, written to the manifest.
+  --speakers <n>          Head count, written to the manifest. On mic+system it is
+                          the number of REMOTE people (1 means one voice on the far
+                          side, so it is not diarized). On mic-multi it is the
+                          number of people in the room.
   --mic-device <name>     Substring of the microphone to use. Default: the built-in one.
   --output-dir <path>     Where recordings go. Default: ~/Documents/MeetingCaptures
   --transcriber <path>    Executable to run when recording stops. It receives the
@@ -123,18 +127,6 @@ do {
     }
 }
 
-// Efficiency-core count (Apple Silicon perflevel1). Used to cap the engine's
-// intra-op threads when it runs under background QoS. Falls back to half the
-// logical cores on hardware without perf levels.
-func efficiencyCoreCount() -> Int {
-    var n: Int32 = 0
-    var size = MemoryLayout<Int32>.size
-    if sysctlbyname("hw.perflevel1.logicalcpu", &n, &size, nil, 0) == 0, n > 0 {
-        return Int(n)
-    }
-    return max(2, ProcessInfo.processInfo.activeProcessorCount / 2)
-}
-
 let label = argVal("--label") ?? ""
 // The mic track's speaker label. Defaults to this account's full name so a first
 // run produces a correctly-labelled transcript with no configuration.
@@ -164,7 +156,7 @@ let expectedSpeakers: Int? = {
         exit(2)
     }
     return v
-}()   // in-person head count (mic-multi)
+}()   // remote head count on mic+system, room head count on mic-multi
 let autoStop = hasFlag("--auto-stop")
 let keepAudio = hasFlag("--keep-audio")
     || ProcessInfo.processInfo.environment["MEETING_CAPTURE_KEEP_AUDIO"] != nil
@@ -173,7 +165,9 @@ let keepAudio = hasFlag("--keep-audio")
 // argument. Absent, the run stops once the audio and manifest are on disk.
 let micDeviceHint = argVal("--mic-device")
 let transcriber = argVal("--transcriber").map { $0.expandingTildeInPath }
-let outputDir = (argVal("--output-dir") ?? "~/Documents/MeetingCaptures").expandingTildeInPath
+// Absolute, so the work dir, the manifest path and the transcriber's cwd all agree.
+let outputDir = URL(fileURLWithPath: (argVal("--output-dir") ?? "~/Documents/MeetingCaptures").expandingTildeInPath)
+    .standardizedFileURL.path
 
 guard source == "mic+system" || source == "mic" || source == "mic-multi" else {
     FileHandle.standardError.write("--source must be 'mic+system', 'mic', or 'mic-multi'\n".data(using: .utf8)!)
@@ -464,25 +458,11 @@ if capturedFrames == 0 {
 }
 
 // ---- manifest ------------------------------------------------------------
-var tracks: [String: Any] = [
-    "mic": ["path": "mic.wav", "host": true, "speaker": host]
-]
-if wantSystem { tracks["system"] = ["path": "system.wav", "host": false] }
-
-var manifest: [String: Any] = [
-    "schema": 1,
-    "meeting_id": meetingID,
-    "label": label,
-    "source": source,
-    "started_at": startedAt,
-    "shared_start_monotonic_ns": sharedStartNs,
-    "tracks": tracks,
-    "output_dir": outputDir,
-]
-if let langHint { manifest["language_hint"] = langHint }
-// In-person head count → pins pyannote to exactly N speakers (a single room mic
-// over-splits otherwise). Only meaningful for mic-multi; harmless elsewhere.
-if let expectedSpeakers, source == "mic-multi" { manifest["expected_speakers"] = expectedSpeakers }
+// Built in NotetakerCore so a check can assert what a take's manifest says, with no device.
+let manifest = CaptureManifest.make(
+    meetingID: meetingID, label: label, source: source, startedAt: startedAt,
+    sharedStartNs: sharedStartNs, host: host, hasSystemTrack: wantSystem, outputDir: outputDir,
+    languageHint: langHint, expectedSpeakers: expectedSpeakers, keepAudio: keepAudio)
 
 let manifestPath = "\(workDir)/manifest.json"
 let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted, .sortedKeys])
@@ -501,56 +481,7 @@ guard let transcriber else {
     FileHandle.standardError.write("[meeting-capture] done. Audio and manifest are in \(workDir)\n  Pass --transcriber <executable> to run a transcription step automatically.\n".data(using: .utf8)!)
     exit(0)
 }
-guard FileManager.default.isExecutableFile(atPath: transcriber) else {
-    FileHandle.standardError.write("--transcriber is not an executable file: \(transcriber)\n".data(using: .utf8)!)
-    exit(1)
-}
-let proc = Process()
-proc.currentDirectoryURL = URL(fileURLWithPath: outputDir)
-// A transcription tool commonly shells out to `ffmpeg`. When this CLI is launched
-// from a GUI app the inherited PATH is minimal and Homebrew is not on it, so the
-// child fails to find its own dependencies. Prepend the common prefixes so the
-// handoff behaves the same from a terminal and from an app bundle.
-var childEnv = ProcessInfo.processInfo.environment
-let basePath = childEnv["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
-childEnv["PATH"] = "/opt/homebrew/bin:/usr/local/bin:" + basePath
-
-// Transcription is CPU-heavy and, unthrottled, pins one worker per performance
-// core, so it fights whatever is in the foreground. Two throttles, both opt-out:
-//   1. Background QoS via `taskpolicy -b` (PRIO_DARWIN_BG, inherited by every
-//      child thread), so the OS schedules it on efficiency cores and lets
-//      foreground work preempt it.
-//   2. OMP_NUM_THREADS capped to the efficiency-core count, so it does not
-//      oversubscribe the cores it has been confined to.
-// `--foreground` opts out of both, for an unattended machine.
-let taskpolicy = "/usr/sbin/taskpolicy"
-let throttle = !hasFlag("--foreground")
-    && FileManager.default.isExecutableFile(atPath: taskpolicy)
-if throttle {
-    let threads = efficiencyCoreCount()
-    childEnv["OMP_NUM_THREADS"] = String(threads)
-    proc.executableURL = URL(fileURLWithPath: taskpolicy)
-    proc.arguments = ["-b", transcriber, manifestPath]
-    FileHandle.standardError.write("[meeting-capture] running \(transcriber) under background QoS (taskpolicy -b, \(threads) threads) ...\n".data(using: .utf8)!)
-} else {
-    proc.executableURL = URL(fileURLWithPath: transcriber)
-    proc.arguments = [manifestPath]
-    FileHandle.standardError.write("[meeting-capture] running \(transcriber) ...\n".data(using: .utf8)!)
-}
-proc.environment = childEnv
-do {
-    try proc.run()
-    proc.waitUntilExit()
-    let status = proc.terminationStatus
-    // Data minimisation: once the transcriber has succeeded, the raw capture audio
-    // is no longer needed, so the workdir (both WAVs plus the manifest) is deleted.
-    // On failure it is kept so the step can be retried against the same audio.
-    // `--keep-audio`, or MEETING_CAPTURE_KEEP_AUDIO in the environment, opts out.
-    if status == 0 && !keepAudio {
-        try? FileManager.default.removeItem(atPath: workDir)
-    }
-    exit(status)
-} catch {
-    FileHandle.standardError.write("transcriber launch failed: \(error)\n".data(using: .utf8)!)
-    exit(1)
-}
+// The handoff itself lives in NotetakerCore so a check can drive it without a device.
+exit(runTranscriberHandoff(workDir: workDir, manifestPath: manifestPath, transcriber: transcriber,
+                           outputDir: outputDir, keepAudio: keepAudio,
+                           foreground: hasFlag("--foreground")))

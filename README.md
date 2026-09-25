@@ -1,10 +1,10 @@
 # MeetingCaptureKit
 
-Dual-track meeting audio capture on macOS, plus six small libraries carved out of a private meeting-recorder app.
+Dual-track meeting audio capture on macOS, an optional transcriber that runs on your own ElevenLabs key, and seven small libraries carved out of a private meeting-recorder app. To have a coding agent set the whole thing up, point it at [AGENTS.md](AGENTS.md).
 
 The part worth your attention is `SystemTap`. It captures system audio with a Core Audio **process tap**: `AudioHardwareCreateProcessTap` wrapped in a private aggregate device with an `AudioDeviceIOProcID`. Apple ships no sample code for this path and the header documentation is thin. The public reference implementation most people find is [insidegui/AudioCap](https://github.com/insidegui/AudioCap), which is where to look for the same API in sample-code form. What this adds beside it is the aggregate being pinned to the current default output device, dual-track capture with a shared start, and a set of checks that run without any of the grants the capture itself needs. A ScreenCaptureKit path sits beside it as the default; see [Which backend](#where-the-tap-loses) for what that choice actually rests on.
 
-**Every verification executable here runs with no microphone grant, no screen-recording grant, no display and no network**, which is what lets the whole suite run on a CI runner. See [Checks](#checks).
+**Every verification executable here runs with no microphone grant, no screen-recording grant, no display and no network**, which is what lets the whole suite run on a CI runner. `transcribe-check` opens one socket, a stub server on 127.0.0.1, and nothing else. See [Checks](#checks).
 
 ---
 
@@ -15,9 +15,9 @@ The part worth your attention is `SystemTap`. It captures system audio with a Co
 - **mic** through `AVCaptureSession`, the person at the keyboard
 - **system** through the process tap or ScreenCaptureKit, everyone else on the call
 
-It writes them as two separate 16 kHz mono PCM16 WAV files plus a `manifest.json` describing them. Nothing joins the call as a bot. No audio leaves the machine.
+It writes them as two separate 16 kHz mono PCM16 WAV files plus a `manifest.json` describing them. Nothing joins the call as a bot. `meeting-capture` itself sends no audio anywhere.
 
-It does **not** transcribe. When you pass `--transcriber <path>`, it runs that executable once with the manifest path as its only argument, and exits with that executable's status. With no `--transcriber`, the run ends with the audio and the manifest on disk.
+`meeting-capture` does **not** transcribe. When you pass `--transcriber <path>`, it runs that executable once with the manifest path as its only argument, and exits with that executable's status. With no `--transcriber`, the run ends with the audio and the manifest on disk. The separate `meeting-transcribe` in this package is one such executable, and it also runs as a background worker. See [Transcription](#transcription).
 
 ### Why two tracks and not one
 
@@ -89,7 +89,7 @@ Then record a real call, both sides. This one needs Screen Recording as well:
 .build/debug/meeting-capture --label weekly-sync   # Enter or Ctrl-C to stop
 ```
 
-Both WAVs and the manifest stay in `~/Documents/MeetingCaptures/.work/<meeting-id>/`. The work directory is only deleted when a `--transcriber` you named ran and exited 0, and `--keep-audio` opts out of even that.
+Both WAVs and the manifest stay in `~/Documents/MeetingCaptures/.work/<meeting-id>/`. The work directory is only deleted when a `--transcriber` you named exited 0 **and** a transcript for that take is proven on disk (the [proof rule](#the-transcriber-contract)). `--keep-audio` opts out of even that. An exit 0 with no proven transcript keeps the audio and says why on stderr.
 
 ### Output layout
 
@@ -102,13 +102,83 @@ Both WAVs and the manifest stay in `~/Documents/MeetingCaptures/.work/<meeting-i
       system.wav       16 kHz mono PCM16, only when --source mic+system
 ```
 
-`manifest.json` carries `schema`, `meeting_id`, `label`, `source`, `started_at`, `shared_start_monotonic_ns`, `tracks`, and `output_dir`. It adds `language_hint` when you pass `--lang`, and `expected_speakers` when you pass `--speakers` with `--source mic-multi`. Each entry in `tracks` names a file relative to the work directory and says whether it is the host track.
+`manifest.json` carries `schema`, `meeting_id`, `label`, `source`, `started_at`, `shared_start_monotonic_ns`, `tracks`, and `output_dir`. It adds `language_hint` when you pass `--lang`, and `expected_speakers` when you pass `--speakers`, on any source. On `mic+system` that number is the **remote** head count, on `mic-multi` the head count in the room, and absent means not known. `schema` is `1` unless the manifest carries a field schema 1 does not define, which today is `expected_speakers` on a source other than `mic-multi`, or `keep_audio`. Then it is `2`. `keep_audio: true` is written when you record with `--keep-audio` or `MEETING_CAPTURE_KEEP_AUDIO`, so the queue worker keeps that take's audio too. Each entry in `tracks` names a file relative to the work directory and says whether it is the host track.
 
 It is written with `.atomic`, temp file plus rename, because it is the "capture is complete" sentinel a watcher keys on and a half-written manifest would be picked up as a finished take.
 
 ### Track alignment
 
 Both capturers stamp `CLOCK_MONOTONIC_RAW` on their first delivered buffer. A shared start is taken before either one begins, and on a two-track run each track is padded with that much leading silence before it is resampled to 16 kHz, so the two files share a zero. A single-track run is not padded, because there is nothing to align to and the padding would prepend the audio device's warm-up as silence. There is no drift correction beyond that, and no per-buffer timestamping.
+
+---
+
+## Transcription
+
+`meeting-transcribe` turns a take into a transcript on ElevenLabs Scribe v2, with **your** key and **your** credits. It is the reference transcriber for the `--transcriber` contract below, and it runs as a background worker that picks up every finished take in the output folder.
+
+**Set it up with [AGENTS.md](AGENTS.md).** It is a numbered runbook a coding agent follows, with the steps only a person can take marked `HUMAN:`. The documented path is the queued one: record with no `--transcriber`, and the worker transcribes each take after it stops, so you can record back to back. `meeting-capture --transcriber "$(which meeting-transcribe)"` also works and follows the same contract, but it blocks the terminal until the transcript is back.
+
+### What leaves your machine
+
+Read this before you consent. `meeting-transcribe --consent-upload` prints the same text and refuses to run unless a person runs it in a terminal.
+
+- **Audio goes to ElevenLabs.** Every non-silent track of every take is uploaded to the US endpoint `api.elevenlabs.io`. Below the Enterprise plan there is no EU data residency.
+- **ElevenLabs retains it.** The provider keeps and logs the uploaded audio and the transcript. Below the Enterprise plan there is no zero-retention mode.
+- **You are the controller.** ElevenLabs is your processor. Read its [Data Processing Addendum](https://elevenlabs.io/dpa) and decide whether it covers your use.
+- **Cost.** Measured at 20.19 credits per channel-minute of audio on one Creator-tier account in 2026. A two-track call bills both tracks, so an hour of call is about 2,400 credits at that rate. Check your own rate with `GET /v1/user/subscription` before relying on this figure.
+- **Tell people.** You must tell every participant that the meeting is recorded and transcribed by a third party, before you record.
+- **Use headphones.** On speakers, the microphone also picks up the other side, and their speech is transcribed twice: once as them and once as you. Nothing suppresses this.
+- **In-person rooms are unmeasured.** `--source mic-multi` sends the single room microphone with speaker separation on. How well that separates a room of people has not been measured.
+
+Consent is recorded in `~/.config/meeting-capture/consent` with the SHA-256 of the disclosure text. If the text changes in a later version, the old consent stops counting until you consent again. `meeting-transcribe --revoke-consent` deletes it, and nothing uploads after that.
+
+### The key
+
+The key lives in the macOS Keychain, added by you:
+
+```bash
+security add-generic-password -s meeting-capture-elevenlabs -a "$USER" -w
+```
+
+`security` asks for the key, so it never appears on a command line or in shell history. `meeting-transcribe` reads it by running `/usr/bin/security`, not through the Keychain API, because every rebuild of an unsigned binary changes its identity and the background worker would then hit an access prompt nobody is there to answer. `ELEVENLABS_API_KEY` in the environment is used only when stdin is a terminal. The worker's LaunchAgent carries no environment variables and no key. A key allowed only Speech to Text is enough.
+
+### The transcriber contract
+
+Anything you pass as `--transcriber`, and anything the worker runs, follows this contract, because deleting audio now depends on it.
+
+- **Input.** One argument: the path to `<output-dir>/.work/<meeting-id>/manifest.json`. Manifest schemas 1 and 2 are accepted. Any other schema is exit 3.
+- **Output.** `<output-dir>/<slug>_<meeting-id>.md` in the [TRANSCRIPT.md](TRANSCRIPT.md) format, and `<output-dir>/.raw/<slug>_<meeting-id>.json`. `<slug>` is the label with everything outside `A-Z a-z 0-9 . _ -` turned into `-`, leading dots and dashes removed, at most 80 characters, or `meeting` when empty.
+- **The proof rule.** The capture CLI and the worker delete a take's audio only after re-reading, from disk: the `.md` exists, is not empty, its frontmatter parses and its `meeting_id` is this take's, and the `.raw` JSON exists. An exit 0 without that proof keeps the audio.
+- **The claim.** `meeting-transcribe` creates `.work/<meeting-id>/.claim` with `O_EXCL` before any upload, refreshes it every 30 s, and treats it as stale after 30 minutes. Before every upload and every write it re-reads the claim, and if another runner has taken it over it writes nothing and exits 6.
+- **Exit codes.**
+
+| Code | Meaning | Capture CLI | Worker |
+|---|---|---|---|
+| 0 | transcript written | deletes the audio if the proof passes | same, else marks `.no-transcript` |
+| 1 | transient: network, timeout, 5xx, repeated 429 | keeps the audio | one attempt, retried after 300 s, `.upload-failed` after 3 |
+| 2 | bad arguments | keeps the audio | counts as an attempt |
+| 3 | this take can never succeed: unreadable WAV, 400, 413, 422, over the length ceiling, unknown schema | keeps the audio | `.refused` or `.unreadable`, not retried |
+| 4 | every track was digital silence | keeps the audio | `.silent-capture`, not retried |
+| 5 | account-wide stop: 401, 402, 403, a quota or balance error, no key, no consent | keeps the audio | pauses the whole queue with the reason, uses no attempt |
+| 6 | another runner holds this take | keeps the audio | skips it, uses no attempt |
+
+Any other exit, a crash or a signal included, counts as an attempt and keeps the audio.
+
+**Bounds.** A track whose peak sample is below 5e-4 of full scale is silent and is not uploaded, and it is named in `silent_tracks`. An unreadable WAV is never guessed at. While the audio is being sent, an upload that makes no progress for 300 s is abandoned and retried later. Once the whole file is sent, a request may wait 900 s plus half the track's length for the answer, because no bytes move while the provider transcribes. So a slow answer about a long take is not uploaded and billed again. A 429 is retried in the same run after 30, 60 and 120 s. A take over 4 hours is refused before upload, which `max_take_seconds` in `~/.config/meeting-capture/config.json` changes. Each track's answer is cached in the take folder the moment it arrives, so a retry never pays for a track that already came back. Every upload attempt is logged with the take, the track, the audio seconds and the result.
+
+### The worker
+
+`meeting-transcribe --install-worker --output-dir <dir>` copies the binary to `~/Library/Application Support/meeting-capture/bin/<hash>/`, points a `current` link at it (and `previous` at the one before, which is the rollback), and loads the LaunchAgent `io.github.meeting-capture.transcribe-worker`. It watches `<dir>/.work`, also runs every 10 minutes, and logs to `~/Library/Logs/meeting-capture-transcribe.log`, which rotates at 5 MB. It installs only when consent is recorded. Without it, it prints what it would do and writes nothing.
+
+| Command | What it does |
+|---|---|
+| `meeting-transcribe --status [<dir>]` | Each waiting take: pending, claimed, cooling down, or failed with its reason and the command to retry. A paused queue shows its reason first. |
+| `meeting-transcribe --requeue <id> [<dir>]` | Clears a take's failure marker and attempt count. |
+| `meeting-transcribe --resume [<dir>]` | Removes the pause written by an exit 5. |
+| `meeting-transcribe --doctor [--live]` | One PASS, WARN or FAIL line per check, including a key read from a LaunchAgent and a 3 s test recording. `--live` sends about 5 s of synthesised speech and **spends credits**. |
+| `meeting-transcribe --uninstall-worker [--revoke-consent]` | Unloads and removes the agent. Consent stays unless you pass `--revoke-consent`. |
+
+A take that failed for good keeps its audio. `--doctor` lists any older than 7 days with the command to delete them, and never deletes them itself.
 
 ---
 
@@ -124,12 +194,12 @@ Every flag `meeting-capture` accepts. An unrecognised argument is a refusal with
 | `--seconds` | `<n>` | Stop after n seconds. Default is to run until you stop it. Must be a positive number. |
 | `--host` | `<name>` | Speaker label for the mic track in the manifest. Defaults to your account's full name. |
 | `--lang` | `<code>` | Advisory language hint. Written to the manifest and used by nothing in this package. |
-| `--speakers` | `<n>` | Advisory head count for `mic-multi`. Written to the manifest. Must be a positive whole number. |
+| `--speakers` | `<n>` | Head count, written to the manifest. On `mic+system` it is the number of remote people, and `1` tells a transcriber not to split that track into speakers. On `mic-multi` it is the number of people in the room. Must be a positive whole number. |
 | `--mic-device` | `<name>` | Case-insensitive substring of the microphone to use. Default is the built-in one, picked by the name heuristic below. |
 | `--output-dir` | `<path>` | Where recordings go. Default `~/Documents/MeetingCaptures`. A directory that cannot be created is a fatal error, not a silent one. |
 | `--transcriber` | `<path>` | Executable to run when recording stops. It receives the manifest path as its only argument. Default is none, in which case the run ends with the audio and manifest on disk. |
 | `--foreground` | flag | Do not run the transcriber under background QoS. |
-| `--keep-audio` | flag | Keep the raw WAVs after a successful transcriber run. |
+| `--keep-audio` | flag | Keep the raw WAVs even after a transcriber run with a proven transcript. |
 | `--auto-stop` | flag | Stop on your behalf once the meeting is clearly over. On a call that means the far side has been silent long enough to have hung up. It never stops while you are still talking, it warns before it acts, and it treats an absent system track as absent rather than silent, so it does not end an in-person recording. This is the `SilenceGate` library, wired in. |
 | `--help`, `-h` | flag | Print the usage text and exit 0. |
 
@@ -168,9 +238,9 @@ The `sys=` field is **omitted entirely** when there is no system capturer, so a 
 
 ## Libraries
 
-Six library products, split out for one reason: each is wrong in ways a compiler cannot see, and each has to be replayable without launching anything or granting a permission.
+Seven library products, split out for one reason: each is wrong in ways a compiler cannot see, and each has to be replayable without launching anything or granting a permission.
 
-**Two of the six are used by the `meeting-capture` CLI. Four are not.** `CaptureIO` and `SilenceGate` are on the path every recording takes. `ScreenPreset`, `SpeakerNaming`, `MeetingPresence` and `LiveAudio` came out of the same private app and ship here as components with their own checks and no caller in this package — `ScreenPreset` is imported only by `MeetingPresence` and by two checks. Nothing here records a screen, renames a speaker, watches for a meeting window, or streams audio over a wire. If you want one of those four, you are taking a library and writing the caller yourself. That is a fair trade for code this heavily falsified, but it should not be a discovery you make after cloning.
+**Three of the seven are used by the CLIs. Four are not.** `CaptureIO` and `SilenceGate` are on the path every recording takes. `NotetakerCore` holds the capture CLI's transcriber handoff and proof rule, and everything `meeting-transcribe` does. `ScreenPreset`, `SpeakerNaming`, `MeetingPresence` and `LiveAudio` came out of the same private app and ship here as components with their own checks and no caller in this package — `ScreenPreset` is imported only by `MeetingPresence` and by two checks. Nothing here records a screen, renames a speaker, watches for a meeting window, or streams audio over a wire. If you want one of those four, you are taking a library and writing the caller yourself. That is a fair trade for code this heavily falsified, but it should not be a discovery you make after cloning.
 
 `CaptureIO` is the one the CLI itself is built on. It holds the resampler, the WAV writer and the disk-backed capture buffer, so recording a long meeting does not hold the meeting in memory. It lived inside the executable, where no check could import it, which is how the one path every user runs ended up as the only path with no coverage.
 
@@ -264,7 +334,7 @@ What each part is for:
 
 ## Checks
 
-Six runnable executables, one per library. They are plain executables rather than XCTest targets because a machine with only the Command Line Tools has no XCTest to link against, and these run there and on a CI runner unchanged.
+Seven runnable executables, one per library. They are plain executables rather than XCTest targets because a machine with only the Command Line Tools has no XCTest to link against, and these run there and on a CI runner unchanged.
 
 ```bash
 swift build
@@ -275,11 +345,14 @@ swift run speaker-naming-check
 swift run screen-record-check
 swift run meeting-presence-check
 swift run live-audio-check
+swift build && "$(swift build --show-bin-path)/transcribe-check"
 ```
+
+`transcribe-check` runs the built `meeting-transcribe` as a child process, so it needs a full `swift build` first rather than `swift run`, which would build only the check. It exits 2 when that binary or its fixtures are missing.
 
 Each prints one line per case and exits 0 when every case passes, 1 when one fails. `silence-gate-check` has a third code: it exits 2 when its fixture is missing or empty, so a run that would have verified nothing cannot be read as a pass.
 
-**None of them needs a microphone grant, a screen-recording grant, a display, or the network.** No audio device is opened, no window server is touched, no socket is created. `silence-gate-check` replays a real level trace from `Fixtures/overrun-trace.levels`, taken from a recording that ran past the end of its call. That fixture is peaks only, one reading per track per five-second tick. No speech content and no participant identity are recoverable from it.
+**None of them needs a microphone grant, a screen-recording grant, a display, or the network.** No audio device is opened and no window server is touched. The one socket is `transcribe-check`'s stub server, bound to 127.0.0.1, and the transcriber refuses any API base that is not a loopback host, so no run of the checks can send a key or audio off the machine. `silence-gate-check` replays a real level trace from `Fixtures/overrun-trace.levels`, taken from a recording that ran past the end of its call. That fixture is peaks only, one reading per track per five-second tick. No speech content and no participant identity are recoverable from it.
 
 ### Where the falsifier is named
 
@@ -287,7 +360,7 @@ Each prints one line per case and exits 0 when every case passes, 1 when one fai
 
 ### The mutation scripts
 
-`Scripts/*-mutations.sh` break the sources on purpose and assert that the **named** check goes red, not merely that the suite failed. All six run against this package. Run them from anywhere:
+`Scripts/*-mutations.sh` break the sources on purpose and assert that the **named** check goes red, not merely that the suite failed. All seven run against this package. Run them from anywhere:
 
 ```bash
 bash Scripts/silence-gate-mutations.sh
@@ -295,6 +368,7 @@ bash Scripts/speaker-naming-mutations.sh
 bash Scripts/screen-record-mutations.sh
 bash Scripts/meeting-presence-mutations.sh
 bash Scripts/live-audio-mutations.sh
+bash Scripts/transcribe-mutations.sh
 ```
 
 Every mutation in them has been observed to make its named check go red. Sources are mutated in place and restored from an `EXIT INT TERM` trap, so an interrupt still puts the tree back. Each script prints one `ok` or `FAIL` line per mutation and a pass or fail banner at the end, so the result comes from the run rather than from this file. Each build a script runs — the baseline and every mutation — goes into its own `--scratch-path`, so a harness run leaves your `.build` untouched. Measured: `rm -rf .build`, run `screen-record-mutations.sh`, and `.build` is still absent afterwards. The baseline run used to omit the flag, which put about 100 MB there on the first line that builds anything. `live-audio-mutations.sh` carries many more mutations than the other four and takes correspondingly longer.
@@ -314,7 +388,7 @@ Three honest limits:
 
 ## What this is not
 
-- **It does not transcribe.** No speech recognition, no model, no API call. `--transcriber` runs an executable you supply and reports its exit status.
+- **`meeting-capture` does not transcribe.** No speech recognition, no model, no API call. `--transcriber` runs an executable you supply and reports its exit status. `meeting-transcribe` is a separate executable, and it does send audio to ElevenLabs, once a person has consented.
 - **It does not summarise.** Nothing here reads a transcript for meaning.
 - **There is no app bundle.** No `.app`, no menu bar item, no UI. Command line only.
 - **There is no code signing and no notarization.** You build it, you run it.

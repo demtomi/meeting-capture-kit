@@ -1,0 +1,57 @@
+{
+ "language_code": "eng",
+ "language_probability": 0.97,
+ "text": "synthetic",
+ "audio_duration_secs": 3710.0,
+ "words": [
+  {
+   "text": "hi",
+   "start": 0.7,
+   "end": 0.9,
+   "type": "word",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": " ",
+   "start": 0.95,
+   "end": 0.95,
+   "type": "spacing",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": "all",
+   "start": 0.95,
+   "end": 1.2,
+   "type": "word",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": " ",
+   "start": 1.5,
+   "end": 1.5,
+   "type": "spacing",
+   "speaker_id": "speaker_1"
+  },
+  {
+   "text": "hey",
+   "start": 1.5,
+   "end": 1.7,
+   "type": "word",
+   "speaker_id": "speaker_1"
+  },
+  {
+   "text": " ",
+   "start": 3700.0,
+   "end": 3700.0,
+   "type": "spacing",
+   "speaker_id": "speaker_0"
+  },
+  {
+   "text": "great",
+   "start": 3700.0,
+   "end": 3700.4,
+   "type": "word",
+   "speaker_id": "speaker_0"
+  }
+ ]
+}

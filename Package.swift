@@ -3,16 +3,17 @@ import PackageDescription
 
 // MeetingCaptureKit — dual-track meeting audio capture on macOS.
 //
-// Six library/CLI targets and six runnable verification executables. Every check
-// runs with no microphone grant, no screen-recording grant, no display and no
-// network, which is what lets the whole suite run on a CI runner.
+// Seven library targets, two CLIs and seven runnable verification executables. Every
+// check runs with no microphone grant, no screen-recording grant, no display and no
+// network, which is what lets the whole suite run on a CI runner. transcribe-check's
+// only socket is a stub server on 127.0.0.1.
 let package = Package(
     name: "MeetingCaptureKit",
     // 14.2 is the floor set by `AudioHardwareCreateProcessTap`, which the system-audio
     // path needs. It was 26.0, which was the development machine's version rather than a
     // measured requirement, and it locked out every Mac more than two releases old.
     //
-    // VERIFIED: the package builds clean and all six verification executables exit 0 at
+    // VERIFIED: the package builds clean and all seven verification executables exit 0 at
     // this deployment target. NOT VERIFIED: that the process tap behaves correctly at
     // RUNTIME on 14.2. That was compiled on macOS 26 and never run on 14.x. The pure
     // logic targets carry no such doubt, since they touch no system audio at all.
@@ -24,7 +25,9 @@ let package = Package(
         .library(name: "SpeakerNaming", targets: ["SpeakerNaming"]),
         .library(name: "MeetingPresence", targets: ["MeetingPresence"]),
         .library(name: "CaptureIO", targets: ["CaptureIO"]),
+        .library(name: "NotetakerCore", targets: ["NotetakerCore"]),
         .executable(name: "meeting-capture", targets: ["MeetingCaptureCLI"]),
+        .executable(name: "meeting-transcribe", targets: ["meeting-transcribe"]),
     ],
     targets: [
         // Dual-track capture CLI: Core Audio process tap (system audio) plus
@@ -40,8 +43,25 @@ let package = Package(
         .target(name: "CaptureIO", path: "Sources/CaptureIO"),
         .executableTarget(
             name: "MeetingCaptureCLI",
-            dependencies: ["CaptureIO", "SilenceGate"],
+            dependencies: ["CaptureIO", "SilenceGate", "NotetakerCore"],
             path: "Sources/MeetingCaptureCLI",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // The transcriber side: the capture CLI's handoff and delete rule, plus everything
+        // `meeting-transcribe` needs. Its own library so a check can drive the delete rule
+        // with no audio device.
+        .target(
+            name: "NotetakerCore",
+            path: "Sources/NotetakerCore",
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // The reference transcriber and queue worker: uploads a take to ElevenLabs on the
+        // taker's own key and writes a transcript. Swift 5 mode for the same semaphore
+        // bridging the capture CLI does.
+        .executableTarget(
+            name: "meeting-transcribe",
+            dependencies: ["NotetakerCore"],
+            path: "Sources/meeting-transcribe",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         // Pure transcript speaker-relabeling. Its own library so it is verifiable
@@ -94,6 +114,14 @@ let package = Package(
             path: "Sources/audio-pipeline-check",
             // Same reason as the capture CLI: straight-line top-level script code that
             // Swift 6 strict concurrency reads as actor-isolated mutation.
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
+        // Needs the network stack for its loopback stub server, and nothing else. It never
+        // reaches a non-loopback host.
+        .executableTarget(
+            name: "transcribe-check",
+            dependencies: ["NotetakerCore"],
+            path: "Sources/transcribe-check",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
