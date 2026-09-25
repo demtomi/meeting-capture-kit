@@ -4,7 +4,7 @@ You are a coding agent setting this repository up for a person. At the end, ever
 
 Follow the steps in order. Each has a command and the output to expect. Stop at the first step whose output does not match, and tell the person what you saw.
 
-Steps marked **HUMAN:** are done by the person, not by you. Ask them to do it, wait, then check the result with the command given. Never type their API key, never run `--consent-upload`, and never approve a paid step for them. `--consent-upload` refuses to run from a shell without a terminal, so it will refuse you anyway.
+Steps marked **HUMAN:** are done by the person, not by you. Ask them to do it, wait, then check the result with the command given. Never type their API key, never run `--consent-upload`, and never approve a paid step for them. `--consent-upload` refuses when stdin is not a terminal. That stops a plain non-interactive shell, not an agent that has a pseudo-terminal, so this rule is yours to keep.
 
 Report results by pasting the output of the commands, never by summarising that something works.
 
@@ -42,11 +42,11 @@ DIR="$HOME/Documents/MeetingCaptures"
 mkdir -p "$DIR" && echo "$DIR"
 ```
 
-Expect the folder path. Use this same `DIR` in every step below.
+Expect the folder path. Shell variables may not survive between your commands, and they never reach the person's terminal. From here on, write this path out literally wherever a step says `$DIR`, and give the person commands that use the absolute path of the clone's `.build/debug/` binaries.
 
 ## 5. HUMAN: grant the microphone
 
-The grant belongs to the app the command runs from, usually the terminal. Ask the person to run this in their own terminal and click **Allow** when macOS asks:
+The grant belongs to the app the command runs from, usually the terminal. Ask the person to run this in their own terminal and click **Allow** when macOS asks. Give them the command with both paths already filled in, for example `/path/to/clone/.build/debug/meeting-capture --label smoke-test --source mic --seconds 6 --output-dir "$HOME/Documents/MeetingCaptures"`:
 
 ```bash
 .build/debug/meeting-capture --label smoke-test --source mic --seconds 6 --output-dir "$DIR"
@@ -74,7 +74,7 @@ Expect `[meeting-capture] mic 6.0s, system 6.0s` (numbers close to 6). Then `rm 
 
 ## 7. HUMAN: create the ElevenLabs key
 
-Ask the person to sign in at elevenlabs.io, open the API keys page, and create a key. If the page offers permission settings, allow only Speech to Text. They keep the key to themselves for the next step.
+Ask the person to sign in at elevenlabs.io, open the API keys page, and create a key. If the page offers permission settings, allow only Speech to Text. (A key restricted this way has not yet been tested live against `--doctor`. If the doctor fails on the key line, try an unrestricted key.) They keep the key to themselves for the next step.
 
 Transcription is paid from their ElevenLabs credits. The measured rate is 20.19 credits per channel-minute on one Creator-tier account in 2026, and a two-track call bills both tracks. Their own rate may differ.
 
@@ -102,9 +102,9 @@ This is the person's decision. Audio will leave the machine. Ask them to run thi
 .build/debug/meeting-transcribe --consent-upload
 ```
 
-It states where the audio goes (the ElevenLabs US endpoint), that ElevenLabs retains it (no zero-retention below the Enterprise plan), where the Data Processing Addendum is, the cost, and their duty to tell every participant that a meeting is recorded and transcribed. Running it records consent. Expect `consent recorded in .../consent`.
+It states where the audio goes (the ElevenLabs US endpoint), that ElevenLabs retains it (this tool never requests zero-retention), where the Data Processing Addendum is, the cost, and their duty to tell every participant that a meeting is recorded and transcribed. Running it records consent. Expect `consent recorded in .../consent`.
 
-Do not run this command yourself. It refuses when stdin is not a terminal, and it should.
+Do not run this command yourself, even if your shell has a terminal. It refuses when stdin is not a terminal, but that check cannot tell a person from a program.
 
 ## 10. Install the background worker
 
@@ -112,7 +112,7 @@ Do not run this command yourself. It refuses when stdin is not a terminal, and i
 .build/debug/meeting-transcribe --install-worker --output-dir "$DIR"
 ```
 
-Expect lines ending with `loaded gui/<uid>/io.github.meeting-capture.transcribe-worker`. If you see `DRY RUN. Nothing was installed`, step 9 has not been done.
+Expect the last line to start with `loaded gui/<uid>/io.github.meeting-capture.transcribe-worker`. If you see `DRY RUN. Nothing was installed`, step 9 has not been done.
 
 ## 11. Run the doctor
 
@@ -153,7 +153,7 @@ Do not pass `--transcriber`. The worker picks the recording up on its own.
 ls "$DIR"/*.md
 ```
 
-While it works, `--status` shows the take as `pending` or `claimed`. When it is done the take disappears from `--status` and a file named `<label>_<meeting-id>.md` is in the folder. On the author's machine a two-hour call took about 4.5 minutes to come back.
+While it works, `--status` shows the take as `pending` or `claimed`. When it is done the take disappears from `--status` and a file named `<label>_<meeting-id>.md` is in the folder. With an earlier uploader on the same provider, recordings of 41 to 261 minutes came back in 2 to 6 minutes. This kit's own worker has been timed only on sub-minute takes, which took a few seconds.
 
 ## If something goes wrong
 

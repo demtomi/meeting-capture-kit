@@ -210,7 +210,7 @@ public enum Renderer {
                "  provider: \"elevenlabs\"",
                "  model: \(q(model))",
                "  endpoint_region: \"us\"",
-               "  retention: \"provider-side, no zero-retention below Enterprise\"",
+               "  retention: \"provider-side, zero-retention never requested\"",
                "meeting_id: \(q(m.meetingID))"]
         if !input.silentTracks.isEmpty {
             fm.append("silent_tracks:")

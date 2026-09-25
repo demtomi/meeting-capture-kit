@@ -17,8 +17,8 @@ public enum Consent {
     public static let disclosureText = """
     meeting-transcribe uploads the audio of every recording it transcribes to ElevenLabs (speech-to-text, model scribe_v2).
 
-    - Where it goes: the ElevenLabs US endpoint (api.elevenlabs.io). Below the Enterprise plan there is no EU data residency.
-    - Retention: ElevenLabs retains and logs the uploaded audio and the transcript on its side. Below the Enterprise plan there is no zero-retention mode.
+    - Where it goes: the ElevenLabs US endpoint (api.elevenlabs.io, the default). This tool cannot use an ElevenLabs data-residency endpoint on any plan.
+    - Retention: ElevenLabs retains and logs the uploaded audio and the transcript on its side. This tool never requests ElevenLabs' zero-retention mode, so that holds on every plan.
     - Your role: you are the controller of these recordings and ElevenLabs is your processor. Read the ElevenLabs Data Processing Addendum (https://elevenlabs.io/dpa) and decide whether it covers your use.
     - Cost: \(costFigure)
     - Your duty: tell every participant that the meeting is being recorded and transcribed by a third party, before you record.

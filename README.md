@@ -1,8 +1,8 @@
 # MeetingCaptureKit
 
-Dual-track meeting audio capture on macOS, an optional transcriber that runs on your own ElevenLabs key, and seven small libraries carved out of a private meeting-recorder app. To have a coding agent set the whole thing up, point it at [AGENTS.md](AGENTS.md).
+Dual-track meeting audio capture on macOS, an optional transcriber that runs on your own ElevenLabs key, and seven small libraries: six carved out of a private meeting-recorder app, plus the transcription core written for this kit. To have a coding agent set the whole thing up, point it at [AGENTS.md](AGENTS.md).
 
-The part worth your attention is `SystemTap`. It captures system audio with a Core Audio **process tap**: `AudioHardwareCreateProcessTap` wrapped in a private aggregate device with an `AudioDeviceIOProcID`. Apple ships no sample code for this path and the header documentation is thin. The public reference implementation most people find is [insidegui/AudioCap](https://github.com/insidegui/AudioCap), which is where to look for the same API in sample-code form. What this adds beside it is the aggregate being pinned to the current default output device, dual-track capture with a shared start, and a set of checks that run without any of the grants the capture itself needs. A ScreenCaptureKit path sits beside it as the default; see [Which backend](#where-the-tap-loses) for what that choice actually rests on.
+The part worth your attention is `SystemTap`. It captures system audio with a Core Audio **process tap**: `AudioHardwareCreateProcessTap` wrapped in a private aggregate device with an `AudioDeviceIOProcID`. Apple's own sample code for this path, [Capturing system audio with Core Audio taps](https://developer.apple.com/documentation/coreaudio/capturing-system-audio-with-core-audio-taps), targets macOS 26, and the header documentation is thin. The public reference implementation most people find is [insidegui/AudioCap](https://github.com/insidegui/AudioCap), which is where to look for the same API in sample-code form. What this adds beside it is the aggregate being pinned to the current default output device, dual-track capture with a shared start, and a set of checks that run without any of the grants the capture itself needs. A ScreenCaptureKit path sits beside it as the default; see [Which backend](#where-the-tap-loses) for what that choice actually rests on.
 
 **Every verification executable here runs with no microphone grant, no screen-recording grant, no display and no network**, which is what lets the whole suite run on a CI runner. `transcribe-check` opens one socket, a stub server on 127.0.0.1, and nothing else. See [Checks](#checks).
 
@@ -116,16 +116,16 @@ Both capturers stamp `CLOCK_MONOTONIC_RAW` on their first delivered buffer. A sh
 
 `meeting-transcribe` turns a take into a transcript on ElevenLabs Scribe v2, with **your** key and **your** credits. It is the reference transcriber for the `--transcriber` contract below, and it runs as a background worker that picks up every finished take in the output folder.
 
-**Set it up with [AGENTS.md](AGENTS.md).** It is a numbered runbook a coding agent follows, with the steps only a person can take marked `HUMAN:`. The documented path is the queued one: record with no `--transcriber`, and the worker transcribes each take after it stops, so you can record back to back. `meeting-capture --transcriber "$(which meeting-transcribe)"` also works and follows the same contract, but it blocks the terminal until the transcript is back.
+**Set it up with [AGENTS.md](AGENTS.md).** It is a numbered runbook a coding agent follows, with the steps only a person can take marked `HUMAN:`. Its author has followed it end to end; a fresh agent has not yet been observed doing so. The documented path is the queued one: record with no `--transcriber`, and the worker transcribes each take after it stops, so you can record back to back. `meeting-capture --transcriber "$(which meeting-transcribe)"` also works and follows the same contract, but it blocks the terminal until the transcript is back.
 
 ### What leaves your machine
 
-Read this before you consent. `meeting-transcribe --consent-upload` prints the same text and refuses to run unless a person runs it in a terminal.
+Read this before you consent. `meeting-transcribe --consent-upload` prints the first five points below, plus the fact that the worker then uploads every completed recording without asking again. It refuses to run when stdin is not a terminal. That stops a plain script, not a program that allocates a pseudo-terminal, so the rule that a person consents is yours to keep.
 
-- **Audio goes to ElevenLabs.** Every non-silent track of every take is uploaded to the US endpoint `api.elevenlabs.io`. Below the Enterprise plan there is no EU data residency.
-- **ElevenLabs retains it.** The provider keeps and logs the uploaded audio and the transcript. Below the Enterprise plan there is no zero-retention mode.
+- **Audio goes to ElevenLabs.** Every non-silent track of every take is uploaded to `api.elevenlabs.io`, the default endpoint (US). The tool cannot use an ElevenLabs data-residency endpoint on any plan.
+- **ElevenLabs retains it.** The provider keeps and logs the uploaded audio and the transcript. This tool never requests ElevenLabs' zero-retention mode, so that holds on every plan.
 - **You are the controller.** ElevenLabs is your processor. Read its [Data Processing Addendum](https://elevenlabs.io/dpa) and decide whether it covers your use.
-- **Cost.** Measured at 20.19 credits per channel-minute of audio on one Creator-tier account in 2026. A two-track call bills both tracks, so an hour of call is about 2,400 credits at that rate. Check your own rate with `GET /v1/user/subscription` before relying on this figure.
+- **Cost.** Measured at 20.19 credits per channel-minute of audio on one Creator-tier account in 2026. A two-track call bills both tracks, so an hour of call is about 2,400 credits at that rate. Measure your own rate as the change in `character_count` from `GET /v1/user/subscription` before and after a take (the meter lags several minutes) before relying on this figure.
 - **Tell people.** You must tell every participant that the meeting is recorded and transcribed by a third party, before you record.
 - **Use headphones.** On speakers, the microphone also picks up the other side, and their speech is transcribed twice: once as them and once as you. Nothing suppresses this.
 - **In-person rooms are unmeasured.** `--source mic-multi` sends the single room microphone with speaker separation on. How well that separates a room of people has not been measured.
@@ -147,7 +147,7 @@ security add-generic-password -s meeting-capture-elevenlabs -a "$USER" -w
 Anything you pass as `--transcriber`, and anything the worker runs, follows this contract, because deleting audio now depends on it.
 
 - **Input.** One argument: the path to `<output-dir>/.work/<meeting-id>/manifest.json`. Manifest schemas 1 and 2 are accepted. Any other schema is exit 3.
-- **Output.** `<output-dir>/<slug>_<meeting-id>.md` in the [TRANSCRIPT.md](TRANSCRIPT.md) format, and `<output-dir>/.raw/<slug>_<meeting-id>.json`. `<slug>` is the label with everything outside `A-Z a-z 0-9 . _ -` turned into `-`, leading dots and dashes removed, at most 80 characters, or `meeting` when empty.
+- **Output.** `<output-dir>/<slug>_<meeting-id>.md` in the [TRANSCRIPT.md](TRANSCRIPT.md) format, and `<output-dir>/.raw/<slug>_<meeting-id>.json`. `<slug>` is the label with each run of characters outside `A-Z a-z 0-9 . _ -` turned into a single `-`, leading and trailing dots and dashes removed, then cut to at most 80 characters and trimmed again, or `meeting` when empty.
 - **The proof rule.** The capture CLI and the worker delete a take's audio only after re-reading, from disk: the `.md` exists, is not empty, its frontmatter parses and its `meeting_id` is this take's, and the `.raw` JSON exists. An exit 0 without that proof keeps the audio.
 - **The claim.** `meeting-transcribe` creates `.work/<meeting-id>/.claim` with `O_EXCL` before any upload, refreshes it every 30 s, and treats it as stale after 30 minutes. Before every upload and every write it re-reads the claim, and if another runner has taken it over it writes nothing and exits 6.
 - **Exit codes.**
@@ -193,7 +193,7 @@ Every flag `meeting-capture` accepts. An unrecognised argument is a refusal with
 | `--capture` | `sck` (default), `tap` | `sck` is ScreenCaptureKit and is unaffected by a mid-meeting output route change. `tap` is the Core Audio process tap, pinned at start to the default output device. Both capture Bluetooth output. Any other value exits 2. |
 | `--seconds` | `<n>` | Stop after n seconds. Default is to run until you stop it. Must be a positive number. |
 | `--host` | `<name>` | Speaker label for the mic track in the manifest. Defaults to your account's full name. |
-| `--lang` | `<code>` | Advisory language hint. Written to the manifest and used by nothing in this package. |
+| `--lang` | `<code>` | Language hint. Written to the manifest as `language_hint`. `meeting-transcribe` sends it to the provider as `language_code`. `meeting-capture` itself does nothing with it. |
 | `--speakers` | `<n>` | Head count, written to the manifest. On `mic+system` it is the number of remote people, and `1` tells a transcriber not to split that track into speakers. On `mic-multi` it is the number of people in the room. Must be a positive whole number. |
 | `--mic-device` | `<name>` | Case-insensitive substring of the microphone to use. Default is the built-in one, picked by the name heuristic below. |
 | `--output-dir` | `<path>` | Where recordings go. Default `~/Documents/MeetingCaptures`. A directory that cannot be created is a fatal error, not a silent one. |
@@ -369,9 +369,10 @@ bash Scripts/screen-record-mutations.sh
 bash Scripts/meeting-presence-mutations.sh
 bash Scripts/live-audio-mutations.sh
 bash Scripts/transcribe-mutations.sh
+bash Scripts/captureio-mutations.sh
 ```
 
-Every mutation in them has been observed to make its named check go red. Sources are mutated in place and restored from an `EXIT INT TERM` trap, so an interrupt still puts the tree back. Each script prints one `ok` or `FAIL` line per mutation and a pass or fail banner at the end, so the result comes from the run rather than from this file. Each build a script runs — the baseline and every mutation — goes into its own `--scratch-path`, so a harness run leaves your `.build` untouched. Measured: `rm -rf .build`, run `screen-record-mutations.sh`, and `.build` is still absent afterwards. The baseline run used to omit the flag, which put about 100 MB there on the first line that builds anything. `live-audio-mutations.sh` carries many more mutations than the other four and takes correspondingly longer.
+Every mutation in them has been observed to make its named check go red. Sources are mutated in place and restored from an `EXIT INT TERM` trap, so an interrupt still puts the tree back. Each script prints one `ok` or `FAIL` line per mutation and a pass or fail banner at the end, so the result comes from the run rather than from this file. Each build a script runs — the baseline and every mutation — goes into its own `--scratch-path`, so a harness run leaves your `.build` untouched. Measured: `rm -rf .build`, run `screen-record-mutations.sh`, and `.build` is still absent afterwards. The baseline run used to omit the flag, which put about 100 MB there on the first line that builds anything. `live-audio-mutations.sh` carries many more mutations than the other six and takes correspondingly longer.
 
 **What counts as a bite.** A compile error never counts. It would fail every mutation equally and says nothing about the limb, so every script separates it from a real red and reports it as having tested nothing.
 
@@ -379,7 +380,6 @@ A runtime trap counts **only where the mutation declares it.** `Scripts/live-aud
 
 Three honest limits:
 
-- **The scripts do not classify a bite the same way.** `live-audio`, `screen-record` and `meeting-presence` test for the named case **first** and only then explain a run that produced no bite, which is the order that keeps a real red from being reclassified as a build error. `speaker-naming` and `silence-gate` still test the build-error branch first, and they anchor on a bare `error: ` rather than the `file:line:col: error:` form, so a clean build whose output happens to quote the string can be scored as "did not build". That is the defect `live-audio-mutations.sh` records having mis-scored 77 mutations once. Bringing those two into line is a welcome change.
 - **Coverage is narrower than it was before the carve.** The consent notice, the recorder, the screen CLI and the live tap had 34 limbs among them and have none here, because those targets are not in this package. What was cut was cut for that reason and nothing else.
 - **Nothing in `Scripts/` covers `MeetingCaptureCLI` itself.** The capture path has no mutation script. It is the one place where a check would need a real device, and that is exactly why it is missing. `CaptureIO`, which is everything that happens to the samples after the device hands them over, is covered by `captureio-mutations.sh` and needs no device at all.
 - **`SampleSink`'s write-error propagation has no falsifier.** `finish()` is documented to throw any error the background writer hit, and removing the error capture makes it stop throwing with no check noticing. Forcing a real write failure needs a full or read-only filesystem that a check running on any machine cannot assume. `captureio-mutations.sh` prints this gap when it finishes rather than leaving it to be discovered.
@@ -394,7 +394,7 @@ Three honest limits:
 - **There is no code signing and no notarization.** You build it, you run it.
 - **There is no `Info.plist`.** Usage-description strings are what an app bundle supplies. A command-line binary inherits the launching app's TCC identity instead, which is why the grant lands on your terminal.
 - **Intel is untested.** No claim either way.
-- **Windows and Linux are not supported.** Core Audio, AVFoundation and ScreenCaptureKit are macOS only. The package will not resolve elsewhere.
+- **Windows and Linux are not supported.** Core Audio, AVFoundation and ScreenCaptureKit are macOS only. The package will not build elsewhere.
 - **The tap's TCC behaviour is not documented here** because it has not been verified. See [Permissions](#permissions-tcc).
 
 ## Maintenance

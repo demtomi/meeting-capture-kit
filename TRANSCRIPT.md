@@ -13,7 +13,7 @@ For an output directory `<dir>`:
 | `<dir>/<slug>_<meeting_id>.md` | The transcript. |
 | `<dir>/.raw/<slug>_<meeting_id>.json` | The speech-to-text responses the transcript was built from, one entry per track plus `_meta`. |
 
-`<slug>` comes from the recording's label. Every character outside `A-Z a-z 0-9 . _ -` becomes `-`, leading dots and dashes are removed, and it is cut at 80 characters. An empty result is `meeting`. So a label cannot name a file outside `<dir>` and cannot produce a hidden file. `<meeting_id>` is the capture's UTC start stamp plus four hex characters, so two recordings never share a name.
+`<slug>` comes from the recording's label. Each run of characters outside `A-Z a-z 0-9 . _ -` becomes a single `-`, leading and trailing dots and dashes are removed, and it is cut at 80 characters and trimmed again. An empty result is `meeting`. So a label cannot name a file outside `<dir>` and cannot produce a hidden file. `<meeting_id>` is the capture's UTC start stamp plus four hex characters, so two recordings started in different seconds never share a name, and two in the same second almost never do.
 
 ## Shape
 
@@ -35,7 +35,7 @@ transcription:
   provider: "elevenlabs"
   model: "scribe_v2"
   endpoint_region: "us"
-  retention: "provider-side, no zero-retention below Enterprise"
+  retention: "provider-side, zero-retention never requested"
 meeting_id: "2026-01-02T03-04-05Z-ab12"
 ---
 1  [00:00:00] Alex Host: good morning
@@ -52,7 +52,7 @@ meeting_id: "2026-01-02T03-04-05Z-ab12"
 | `date` | Local start date, `YYYY-MM-DD`. |
 | `start` | Local start time and UTC offset, `HH:MM +HH:MM`. |
 | `duration` | Length of the longest track, `<minutes>m<seconds>s`. |
-| `language` | The language code the provider returned for the track with the most words, as returned. Speech is never translated. |
+| `language` | The language code the provider returned for the track with the most words, as returned. If the provider returns none, the capture's `--lang` hint, else `und`. Speech is never translated. |
 | `participants` | The host as `<name> (host, mic)`, remote speakers as `Speaker N (remote)`. On an in-person `mic-multi` recording every voice is `Speaker N (in-person)`. |
 | `source` | `mic+system`, `mic` or `mic-multi`, from the capture. |
 | `diarization` | Exactly one of the three values below. |
@@ -71,7 +71,7 @@ meeting_id: "2026-01-02T03-04-05Z-ab12"
 - One utterance per line: `<n>  [HH:MM:SS] <Speaker>: <text>`. `<n>` starts at 1 and equals the line's position in the body. Two spaces follow it.
 - `[HH:MM:SS]` is the utterance's start, counted from the start of the recording. Both tracks share one zero, so their lines interleave in time order.
 - An utterance is a run of words by one speaker. A pause of more than 1.2 seconds starts a new line even when the speaker is unchanged. Long turns are not split at sentence boundaries.
-- The host's line carries the name from the capture's `--host`. Remote and in-person speakers are `Speaker N`, numbered in the order of the provider's speaker ids. A name never contains a colon or a line break.
+- The host's line carries the name from the capture's `--host`. Remote and in-person speakers are `Speaker N`, numbered in sorted (string) order of the provider's speaker ids. A name never contains a colon or a line break.
 - Only spoken words appear. Sound events and spacing tokens from the provider are dropped. There is no Markdown bold and no list numbering.
 
 ## Known limits
