@@ -86,13 +86,13 @@ Ask the person to run this in their own terminal. It asks for the key, so the ke
 security add-generic-password -s meeting-capture-elevenlabs -a "$USER" -w
 ```
 
-Check that it is there, without printing it:
+Check that it is there and has the shape of an ElevenLabs key, without printing it:
 
 ```bash
-security find-generic-password -s meeting-capture-elevenlabs > /dev/null && echo "key present"
+K="$(security find-generic-password -s meeting-capture-elevenlabs -w)" && case "$K" in sk_*) echo "key present, ${#K} characters";; *) echo "key present but does not start with sk_, ${#K} characters";; esac || echo "no key in the Keychain"; unset K
 ```
 
-Expect `key present`.
+Expect `key present, N characters`. The author's key was 51 characters, and one that is 20 or shorter is almost certainly not a key. If it does not start with `sk_`, the person pasted something else, often the key's name or its masked hint. Ask them to copy the full key again and store it with `security add-generic-password -U -s meeting-capture-elevenlabs -a "$USER" -w`, where `-U` replaces the wrong entry.
 
 ## 9. HUMAN: consent to uploads
 
