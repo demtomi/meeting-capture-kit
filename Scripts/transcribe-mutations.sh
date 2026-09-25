@@ -291,16 +291,19 @@ limb "a crash's tombstone is never cleaned" "$WORKER" \
     's/^        clearTombstones()$/        _ = 0/' \
     "tomb: a tombstone left by a crash is cleaned by the next drain, and is never transcribed"
 limb "the stalled-send watchdog never fires" "$CLIENT" \
-    's/        timer.setEventHandler { if watch.stalled(for: stallLimit) { task.cancel() } }/        timer.setEventHandler { }/' \
+    's/            if watch.stalled(for: stallLimit) { task.cancel() }/            _ = 0/' \
     "c a stalled upload is abandoned as transient long before the processing timeout"
-limb "the watchdog also fires during processing" "$CLIENT" \
-    's/        guard !didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }/        guard !didStall, Date().timeIntervalSince(lastProgress) > limit else { return false }/' \
+limb "a finished body can still read as a stall" "$CLIENT" \
+    's/        guard !_didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }/        guard !_didStall, Date().timeIntervalSince(lastProgress) > limit else { return false }/' \
+    "c the watchdog knows when the body is finished, and a finished body is never a stall"
+limb "the watchdog also fires during processing (both layers gone)" "$CLIENT" \
+    's/        guard !_didStall, !bodyDone, Date().timeIntervalSince(lastProgress) > limit else { return false }/        guard !_didStall, Date().timeIntervalSince(lastProgress) > limit else { return false }/; s/            if watch.bodyFinished { timer.cancel(); return }/            _ = 0/' \
     "c a slow answer after the whole body is sent is waited for, not called a stall"
 limb "a kept, proven take is left unmarked" "$HANDOFF" \
     's/        } else if proofPasses \&\& keepAudio {/        } else if false {/' \
     "keep: a kept take the capture CLI already transcribed is marked done and never re-run"
 limb "--output-dir is ignored by the worker commands" "$MAIN" \
-    's/    let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir ?? defaultOutputDir/    let d = rest.first ?? config.output_dir ?? defaultOutputDir/' \
+    's/    guard let d = value(after: "--output-dir") ?? rest.first ?? config.output_dir else { return nil }/    guard let d = rest.first ?? config.output_dir else { return nil }/' \
     "args: --output-dir is honoured by --status, --requeue and --drain, over the config"
 limb "--status ignores a dead holder" "$WORKER" \
     's/                      !TakeClaim.holderIsDead(read(d + "\/" + TakeClaim.fileName) ?? "") {/                      true {/' \

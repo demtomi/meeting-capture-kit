@@ -646,7 +646,9 @@ do {
     let midway = w.bodyFinished
     w.urlSession(URLSession.shared, task: dummy, didSendBodyData: 50, totalBytesSent: 100, totalBytesExpectedToSend: 100)
     check("c the watchdog knows when the body is finished, and a finished body is never a stall",
-          !midway && w.bodyFinished && !w.stalled(for: 0) && !w.didStall,
+          // for: -1 makes the time condition always true, so only the finished-body guard
+          // can hold this to false. With 0, an elapsed time of exactly zero also would.
+          !midway && w.bodyFinished && !w.stalled(for: -1) && !w.didStall,
           breaksIf: "the watchdog cannot tell a finished body from a stalled one, so it keeps ticking or cancels processing")
 }
 
